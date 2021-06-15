@@ -1,6 +1,9 @@
 package socks5
 
-import "net"
+import (
+	"io"
+	"net"
+)
 
 // VER indicates protocol version
 type VER = uint8
@@ -21,7 +24,7 @@ const (
 	NO_ACCEPTABLE_METHODS      METHOD = 0x05
 )
 
-// CMD
+// CMD is one of a field in Socks5 Request
 type CMD = uint8
 
 const (
@@ -30,6 +33,7 @@ const (
 	UDP_ASSOCIATE CMD = 0x03
 )
 
+// REP is one of a filed in Socks5 Reply
 type REP = uint8
 
 const (
@@ -45,6 +49,7 @@ const (
 	UNASSIGNED                      REP = 0x09
 )
 
+// ATYPE indicates adderss type in Request and Reply struct
 type ATYPE = uint8
 
 const (
@@ -84,3 +89,15 @@ type Reply struct {
 	BindAddr net.IPAddr
 	BindPort uint16
 }
+
+func DecodeReply(reply *Reply) ([]byte, error) {
+	return nil, nil
+}
+
+type HandShake interface {
+	HandShake(reader io.Reader, writer io.Writer) (*Request, error)
+	handshake4(cmd CMD, reader io.Reader, writer io.Writer) (*Request, error)
+	handshake5()
+}
+
+type DefaultHandShake struct{}
