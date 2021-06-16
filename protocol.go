@@ -1,9 +1,14 @@
 package socks5
 
-import (
-	"io"
-	"net"
-)
+import "fmt"
+
+type VersionError struct {
+	VER
+}
+
+func (v *VersionError) Error() string {
+	return fmt.Sprintf("error socks protocol version: %d", v.VER)
+}
 
 // VER indicates protocol version
 type VER = uint8
@@ -12,6 +17,18 @@ const (
 	Version4 = 0x04
 	Version5 = 0x05
 )
+
+type MethodError struct {
+	METHOD
+}
+
+func (m *MethodError) Error() string {
+	if _, ok := method2Str[m.METHOD]; ok {
+		return fmt.Sprintf("don't support this method %s", m.METHOD)
+	} else {
+		return fmt.Sprintf("unknown mehotd %#x", m.METHOD)
+	}
+}
 
 // METHOD Defined authentication methods
 type METHOD = uint8
@@ -23,6 +40,14 @@ const (
 	IANA_ASSIGNED              METHOD = 0x03
 	NO_ACCEPTABLE_METHODS      METHOD = 0x05
 )
+
+var method2Str = map[METHOD]string{
+	NO_AUTHENTICATION_REQUIRED: "NO_AUTHENTICATION_REQUIRED",
+	GSSAPI:                     "GSSAPI",
+	USERNAME_PASSWORD:          "USERNAME_PASSWORD",
+	IANA_ASSIGNED:              "IANA_ASSIGNED",
+	NO_ACCEPTABLE_METHODS:      "NO_ACCEPTABLE_METHODS",
+}
 
 // CMD is one of a field in Socks5 Request
 type CMD = uint8
@@ -36,6 +61,7 @@ const (
 // REP is one of a filed in Socks5 Reply
 type REP = uint8
 
+//socks5 reply
 const (
 	SUCCESSED                       REP = 0x00
 	GENERAL_SOCKS_SERVER_FAILURE    REP = 0x01
@@ -49,6 +75,27 @@ const (
 	UNASSIGNED                      REP = 0x09
 )
 
+var rep2Str = map[REP]string{
+	SUCCESSED:                       "SUCCESSED",
+	GENERAL_SOCKS_SERVER_FAILURE:    "GENERAL_SOCKS_SERVER_FAILURE",
+	CONNECTION_NOT_ALLOW_BY_RULESET: "CONNECTION_NOT_ALLOW_BY_RULESET",
+	NETWORK_UNREACHABLE:             "NETWORK_UNREACHABLE",
+	HOST_UNREACHABLE:                "HOST_UNREACHABLE",
+	CONNECTION_REFUSED:              "CONNECTION_REFUSED",
+	TTL_EXPIRED:                     "TTL_EXPIRED",
+	COMMAND_NOT_SUPPORTED:           "COMMAND_NOT_SUPPORTED",
+	ADDRESS_TYPE_NOT_SUPPORTED:      "ADDRESS_TYPE_NOT_SUPPORTED",
+	UNASSIGNED:                      "UNASSIGNED",
+}
+
+//socks4 reply
+const (
+	// PERMIT means server allow  client request
+	PERMIT = 90
+	// REJECT means server refuse client request
+	REJECT = 91
+)
+
 // ATYPE indicates adderss type in Request and Reply struct
 type ATYPE = uint8
 
@@ -57,47 +104,3 @@ const (
 	DOMAINNAME   ATYPE = 0x03
 	IPV6_ADDRESS ATYPE = 0x04
 )
-
-// Request The SOCKS request is formed as follows:
-//
-//        +----+-----+-------+------+----------+----------+
-//        |VER | CMD |  RSV  | ATYP | DST.ADDR | DST.PORT |
-//        +----+-----+-------+------+----------+----------+
-//        | 1  |  1  | X'00' |  1   | Variable |    2     |
-//        +----+-----+-------+------+----------+----------+
-type Request struct {
-	VER
-	CMD
-	RSV uint8
-	ATYPE
-	DestAddr net.IPAddr
-	DestPort uint16
-}
-
-// Reply a reply formed as follows:
-//
-//        +----+-----+-------+------+----------+----------+
-//        |VER | REP |  RSV  | ATYP | BND.ADDR | BND.PORT |
-//        +----+-----+-------+------+----------+----------+
-//        | 1  |  1  | X'00' |  1   | Variable |    2     |
-//        +----+-----+-------+------+----------+----------+
-type Reply struct {
-	VER
-	REP
-	RSV uint8
-	ATYPE
-	BindAddr net.IPAddr
-	BindPort uint16
-}
-
-func DecodeReply(reply *Reply) ([]byte, error) {
-	return nil, nil
-}
-
-type HandShake interface {
-	HandShake(reader io.Reader, writer io.Writer) (*Request, error)
-	handshake4(cmd CMD, reader io.Reader, writer io.Writer) (*Request, error)
-	handshake5()
-}
-
-type DefaultHandShake struct{}
