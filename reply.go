@@ -21,7 +21,7 @@ type Reply struct {
 	BindPort uint16
 }
 
-// SerializeSocks4Reply serialize reply to []byte
+// SerializeSocks4Reply serialize socks4 reply to []byte
 func SerializeSocks4Reply(cmd CMD, ip net.IP, port uint16) []byte {
 	reply := []byte{0, cmd}
 	reply = append(reply, ip...)
@@ -29,4 +29,9 @@ func SerializeSocks4Reply(cmd CMD, ip net.IP, port uint16) []byte {
 	binary.BigEndian.PutUint16(portBytes, port)
 	reply = append(reply, portBytes...)
 	return reply
+}
+
+// SerializeSocks5Reply serialize socks5 reply to []byte
+func SerializeSocks5Reply() []byte {
+	return nil
 }

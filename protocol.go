@@ -49,6 +49,18 @@ var method2Str = map[METHOD]string{
 	NO_ACCEPTABLE_METHODS:      "NO_ACCEPTABLE_METHODS",
 }
 
+//
+type CMDError struct {
+	CMD
+}
+
+func (c *CMDError) Error() string {
+	if _, ok := cmdtoStr[c.CMD]; !ok {
+		return fmt.Sprintf("unknown command:%#x", c.CMD)
+	}
+	return fmt.Sprintf("don't support this command:%s", cmdtoStr[c.CMD])
+}
+
 // CMD is one of a field in Socks5 Request
 type CMD = uint8
 
@@ -57,6 +69,12 @@ const (
 	BIND          CMD = 0x02
 	UDP_ASSOCIATE CMD = 0x03
 )
+
+var cmdtoStr = map[CMD]string{
+	CONNECT:       "CONNECT",
+	BIND:          "BIND",
+	UDP_ASSOCIATE: "UDP_ASSOCIATE",
+}
 
 // REP is one of a filed in Socks5 Reply
 type REP = uint8
@@ -95,6 +113,14 @@ const (
 	// REJECT means server refuse client request
 	REJECT = 91
 )
+
+type AtypeError struct {
+	ATYPE
+}
+
+func (a *AtypeError) Error() string {
+	return fmt.Sprintf("unknown address type:%#x", a.ATYPE)
+}
 
 // ATYPE indicates adderss type in Request and Reply struct
 type ATYPE = uint8

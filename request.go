@@ -14,6 +14,6 @@ type Request struct {
 	CMD
 	RSV uint8
 	ATYPE
-	DestAddr net.IPAddr
+	DestAddr net.IP
 	DestPort uint16
 }
