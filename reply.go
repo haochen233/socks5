@@ -17,7 +17,7 @@ type Reply struct {
 	REP
 	RSV uint8
 	ATYPE
-	BindAddr net.IPAddr
+	BindAddr net.IP
 	BindPort uint16
 }
 
@@ -29,6 +29,17 @@ func SerializeSocks4Reply(cmd CMD, ip net.IP, port uint16) []byte {
 	binary.BigEndian.PutUint16(portBytes, port)
 	reply = append(reply, portBytes...)
 	return reply
+}
+
+// DeserializeSocks4Reply deserialize socks4 []byte to reply
+func DeserializeSocks4Reply(b []byte) (*Reply, error) {
+	reply := &Reply{
+		VER:      b[0],
+		REP:      b[1],
+		BindAddr: b[2:6],
+		BindPort: binary.BigEndian.Uint16(b[6:]),
+	}
+	return reply, nil
 }
 
 // SerializeSocks5Reply serialize socks5 reply to []byte

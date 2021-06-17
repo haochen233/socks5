@@ -16,17 +16,69 @@ type SocksProcedure interface {
 	ProcessSocks4Request(in io.Reader, out io.Writer) error
 	ProcessSocks5Request(in io.Reader, out io.Writer) error
 	IsAllowNoAuthRequired() bool
+	Establish(req *Request) (client net.Conn, dest net.Conn, err error)
 }
 
 type Server struct {
+	Address         string
 	supportMethods  map[METHOD]Authenticator
-	supportCommands map[CMD]int
+	supportCommands []CMD
+	ln              net.Listener
 }
 
+// NewServer return socks server
+func NewServer(addr string, supportMethods map[METHOD]Authenticator,
+	supportCommands []CMD) *Server {
+	return &Server{
+		Address:         addr,
+		supportMethods:  supportMethods,
+		supportCommands: supportCommands,
+	}
+}
+
+// Listen server start listen
+func (s *Server) Listen() error {
+	var err error
+	s.ln, err = net.Listen("tcp", s.Address)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Serve every client connection
+func (s *Server) Serve() error {
+	for {
+		client, err := s.ln.Accept()
+		if err != nil {
+			return err
+		}
+		go s.ServeConn(context.Background(), client)
+	}
+}
+
+// ServeConn Access client connections
 func (s *Server) ServeConn(ctx context.Context, client net.Conn) {
-	panic("implement me")
+	req, err := s.HandShake(ctx, client, client)
+	if err != nil {
+		client.Close()
+		return
+	}
+
+	remote, err := s.Establish(req)
+	if err != nil {
+		client.Close()
+		return
+	}
+
+	out := NewBuffer(1024)
+	go out.Transport(remote, client)
+	in := NewBuffer(1024)
+	go in.Transport(client, remote)
 }
 
+// HandShake socks protocol handshake process
 func (s *Server) HandShake(ctx context.Context, in io.Reader, out io.Writer) (*Request, error) {
 	//validate socks version message
 	version, err := CheckVersion(in)
@@ -84,6 +136,7 @@ func (s *Server) Authentication(in io.Reader, out io.Writer) error {
 			if err != nil {
 				return err
 			}
+			return nil
 		}
 		for m := range s.supportMethods {
 			//Select the first matched method to authenticate
@@ -216,6 +269,21 @@ func (s *Server) IsAllowNoAuthRequired() bool {
 		}
 	}
 	return false
+}
+
+var errNotEstablish = errors.New("unable to establish a connection to the remote server")
+
+// Establish dial to the target address of the client
+func (s *Server) Establish(req *Request) (dest net.Conn, err error) {
+	switch req.CMD {
+	case CONNECT:
+		dest, err = net.Dial("tcp", req.Address())
+	case UDP_ASSOCIATE:
+		dest, err = net.Dial("udp", req.Address())
+	default:
+		dest, err = nil, errNotEstablish
+	}
+	return
 }
 
 // CheckVersion check version is 4 or 5.

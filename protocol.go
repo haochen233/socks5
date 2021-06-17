@@ -24,7 +24,7 @@ type MethodError struct {
 
 func (m *MethodError) Error() string {
 	if _, ok := method2Str[m.METHOD]; ok {
-		return fmt.Sprintf("don't support this method %s", m.METHOD)
+		return fmt.Sprintf("don't support this method %s", method2Str[m.METHOD])
 	} else {
 		return fmt.Sprintf("unknown mehotd %#x", m.METHOD)
 	}

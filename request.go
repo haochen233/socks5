@@ -1,6 +1,9 @@
 package socks5
 
-import "net"
+import (
+	"net"
+	"strconv"
+)
 
 // Request The SOCKS request is formed as follows:
 //
@@ -16,4 +19,9 @@ type Request struct {
 	ATYPE
 	DestAddr net.IP
 	DestPort uint16
+}
+
+// Address return dest server address
+func (r *Request) Address() string {
+	return string(r.DestAddr) + ":" + strconv.Itoa(int(r.DestPort))
 }
