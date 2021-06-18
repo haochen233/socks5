@@ -1,6 +1,7 @@
 package socks5
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -80,9 +81,6 @@ func (s *Server) Serve() error {
 func (s *Server) ServeConn(ctx context.Context, client net.Conn) {
 	req, err := s.HandShake(ctx, client, client)
 	if err != nil {
-		if _, ok := err.(*CMDError); ok {
-
-		}
 		log.Println(err)
 		client.Close()
 		return
@@ -184,17 +182,24 @@ func (s *Server) ProcessSocks4Request(in io.Reader, out io.Writer) (*Request, er
 		BindAddr: s.Addr,
 		BindPort: s.Port,
 	}
+	req := &Request{
+		VER:   Version4,
+		ATYPE: IPV4_ADDRESS,
+	}
+
 	cmd := make([]byte, 1)
 	_, err := io.ReadAtLeast(in, cmd, 1)
 	if err != nil {
 		return nil, err
 	}
+	req.CMD = cmd[0]
 
 	destPort := make([]byte, 2)
 	_, err = io.ReadAtLeast(in, destPort, 2)
 	if err != nil {
 		return nil, err
 	}
+	req.DestPort = binary.BigEndian.Uint16(destPort)
 
 	//todo: should support socks4a
 	destIP := make([]byte, 4)
@@ -202,15 +207,34 @@ func (s *Server) ProcessSocks4Request(in io.Reader, out io.Writer) (*Request, er
 	if err != nil {
 		return nil, err
 	}
+	req.DestAddr = destIP
 
 	//Discard later bytes until read EOF
 	//Please see socks4 request format at(http://ftp.icm.edu.pl/packages/socks/socks4/SOCKS4.protocol)
-	err = UntilReadNull(in)
+	err = ReadAndDiscardNotNullByte(in)
 	if err != nil {
 		return nil, err
 	}
 
-	switch cmd[0] {
+	//Socks4a extension
+	// +----+----+----+----+----+----+----+----+----+----++----++-----+-----++----+
+	// | VN | CD | DSTPORT |      DSTIP        | USERID   |NULL|  HOSTNAME   |NULL|
+	// +----+----+----+----+----+----+----+----+----+----++----++-----+-----++----+
+	//    1    1      2              4           variable    1    variable    1
+	//The client sets the first three bytes of DSTIP to NULL and
+	//the last byte to non-zero. The corresponding IP address is
+	//0.0.0.x, where x is non-zero
+	if destIP[0] == 0 && destIP[1] == 0 && destIP[2] == 0 &&
+		destIP[3] != 0 {
+		destIP, err = ReadNotNull(in)
+		if err != nil {
+			return nil, err
+		}
+		req.DestAddr = destIP
+		req.ATYPE = DOMAINNAME
+	}
+
+	switch req.CMD {
 	case CONNECT:
 		reply.REP = PERMIT
 		err = s.SendReply(out, reply)
@@ -225,17 +249,10 @@ func (s *Server) ProcessSocks4Request(in io.Reader, out io.Writer) (*Request, er
 		if err != nil {
 			return nil, err
 		}
-		return nil, &CMDError{cmd[0]}
+		return nil, &CMDError{req.CMD}
 	}
 
-	return &Request{
-		VER:      Version4,
-		CMD:      cmd[0],
-		RSV:      0,
-		ATYPE:    0,
-		DestAddr: destIP,
-		DestPort: binary.BigEndian.Uint16(destPort),
-	}, nil
+	return req, nil
 }
 
 // ProcessSocks5Request receive socks5 protol client request and
@@ -377,16 +394,35 @@ func CheckVersion(in io.Reader) (VER, error) {
 	return version[0], nil
 }
 
-// UntilReadNull Read all not Null byte and discard. Until read Null byte(all zero bits)
-func UntilReadNull(reader io.Reader) error {
-	data := make([]byte, 1)
+// ReadAndDiscardNotNullByte Read all not Null byte and discard.
+// Until read first Null byte(all zero bits)
+func ReadAndDiscardNotNullByte(reader io.Reader) error {
+	b := make([]byte, 1)
 	for {
-		_, err := reader.Read(data)
+		_, err := reader.Read(b)
 		if err != nil {
 			return err
 		}
-		if data[0] == 0 {
+		if b[0] == 0 {
 			return nil
 		}
+	}
+}
+
+// ReadNotNull Read all not Null byte.
+// Until read first Null byte(all zero bits)
+func ReadNotNull(reader io.Reader) ([]byte, error) {
+	data := &bytes.Buffer{}
+	b := make([]byte, 1)
+	for {
+		_, err := reader.Read(b)
+		if err != nil {
+			return nil, err
+		}
+
+		if b[0] == 0 {
+			return data.Bytes(), nil
+		}
+		data.WriteByte(b[0])
 	}
 }
