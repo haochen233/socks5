@@ -49,16 +49,16 @@ var method2Str = map[METHOD]string{
 	NO_ACCEPTABLE_METHODS:      "NO_ACCEPTABLE_METHODS",
 }
 
-//
+// CMDError cmd error type
 type CMDError struct {
 	CMD
 }
 
 func (c *CMDError) Error() string {
-	if _, ok := cmdtoStr[c.CMD]; !ok {
+	if _, ok := cmd2Str[c.CMD]; !ok {
 		return fmt.Sprintf("unknown command:%#x", c.CMD)
 	}
-	return fmt.Sprintf("don't support this command:%s", cmdtoStr[c.CMD])
+	return fmt.Sprintf("don't support this command:%s", cmd2Str[c.CMD])
 }
 
 // CMD is one of a field in Socks5 Request
@@ -70,10 +70,21 @@ const (
 	UDP_ASSOCIATE CMD = 0x03
 )
 
-var cmdtoStr = map[CMD]string{
+var cmd2Str = map[CMD]string{
 	CONNECT:       "CONNECT",
 	BIND:          "BIND",
 	UDP_ASSOCIATE: "UDP_ASSOCIATE",
+}
+
+type REPError struct {
+	REP
+}
+
+func (r *REPError) Error() string {
+	if _, ok := cmd2Str[r.REP]; !ok {
+		return fmt.Sprintf("unknown rep:%#x", r.REP)
+	}
+	return fmt.Sprintf("don't support this rep:%s", rep2Str[r.REP])
 }
 
 // REP is one of a filed in Socks5 Reply
@@ -130,3 +141,9 @@ const (
 	DOMAINNAME   ATYPE = 0x03
 	IPV6_ADDRESS ATYPE = 0x04
 )
+
+var atype2Str = map[ATYPE]string{
+	IPV4_ADDRESS: "IPV4_ADDRESS",
+	DOMAINNAME:   "DOMAINNAME",
+	IPV6_ADDRESS: "IPV6_ADDRESS",
+}

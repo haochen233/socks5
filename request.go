@@ -22,6 +22,13 @@ type Request struct {
 }
 
 // Address return dest server address
+// Examples:
+//	127.0.0.1:80
+//	example.com:443
+//  [fe80::1%lo0]:80
 func (r *Request) Address() string {
-	return string(r.DestAddr) + ":" + strconv.Itoa(int(r.DestPort))
+	if r.ATYPE == DOMAINNAME {
+		return net.JoinHostPort(string(r.DestAddr), strconv.Itoa(int(r.DestPort)))
+	}
+	return net.JoinHostPort(r.DestAddr.String(), strconv.Itoa(int(r.DestPort)))
 }

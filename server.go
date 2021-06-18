@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"log"
 	"net"
+	"strconv"
 )
 
 // SocksProcedure includes socks protocol process
@@ -20,26 +22,42 @@ type SocksProcedure interface {
 }
 
 type Server struct {
-	Address         string
+	Addr            net.IP
+	Port            uint16
+	Atype           ATYPE
 	supportMethods  map[METHOD]Authenticator
 	supportCommands []CMD
 	ln              net.Listener
 }
 
 // NewServer return socks server
-func NewServer(addr string, supportMethods map[METHOD]Authenticator,
+func NewServer(atype ATYPE, addr net.IP, port uint16, supportMethods map[METHOD]Authenticator,
 	supportCommands []CMD) *Server {
 	return &Server{
-		Address:         addr,
+		Atype:           atype,
+		Addr:            addr,
+		Port:            port,
 		supportMethods:  supportMethods,
 		supportCommands: supportCommands,
 	}
 }
 
+// Address return server address like
+// Examples:
+//	127.0.0.1:80
+//	example.com:443
+//  [fe80::1%lo0]:80
+func (s *Server) Address() string {
+	if s.Atype == DOMAINNAME {
+		return net.JoinHostPort(string(s.Addr), strconv.Itoa(int(s.Port)))
+	}
+	return net.JoinHostPort(s.Addr.String(), strconv.Itoa(int(s.Port)))
+}
+
 // Listen server start listen
 func (s *Server) Listen() error {
 	var err error
-	s.ln, err = net.Listen("tcp", s.Address)
+	s.ln, err = net.Listen("tcp", s.Address())
 	if err != nil {
 		return err
 	}
@@ -62,12 +80,17 @@ func (s *Server) Serve() error {
 func (s *Server) ServeConn(ctx context.Context, client net.Conn) {
 	req, err := s.HandShake(ctx, client, client)
 	if err != nil {
+		if _, ok := err.(*CMDError); ok {
+
+		}
+		log.Println(err)
 		client.Close()
 		return
 	}
 
 	remote, err := s.Establish(req)
 	if err != nil {
+		log.Println(err)
 		client.Close()
 		return
 	}
@@ -90,8 +113,11 @@ func (s *Server) HandShake(ctx context.Context, in io.Reader, out io.Writer) (*R
 	if version == Version4 {
 		if !s.IsAllowNoAuthRequired() {
 			//send server reject reply
-			reply := SerializeSocks4Reply(REJECT, net.IPv4zero, 0)
-			_, err := out.Write(reply)
+			reply, err := SerializeSocks4Reply(REJECT, net.IPv4zero, 0)
+			if err != nil {
+				return nil, err
+			}
+			_, err = out.Write(reply)
 			if err != nil {
 				return nil, err
 			}
@@ -177,14 +203,33 @@ func (s *Server) ProcessSocks4Request(in io.Reader, out io.Writer) (*Request, er
 
 	switch cmd[0] {
 	case CONNECT:
-		reply := SerializeSocks4Reply(PERMIT, net.IPv4zero, 0)
-		_, err := out.Write(reply)
+		reply, err := SerializeSocks4Reply(PERMIT, net.IPv4zero, 0)
+		if err != nil {
+			return nil, err
+		}
+		_, err = out.Write(reply)
 		if err != nil {
 			return nil, err
 		}
 	case BIND:
+		reply, err := SerializeSocks4Reply(REJECT, net.IPv4zero, 0)
+		if err != nil {
+			return nil, err
+		}
+		_, err = out.Write(reply)
+		if err != nil {
+			return nil, err
+		}
 		return nil, &CMDError{BIND}
 	default:
+		reply, err := SerializeSocks4Reply(REJECT, net.IPv4zero, 0)
+		if err != nil {
+			return nil, err
+		}
+		_, err = out.Write(reply)
+		if err != nil {
+			return nil, err
+		}
 		return nil, &CMDError{cmd[0]}
 	}
 
@@ -199,6 +244,12 @@ func (s *Server) ProcessSocks4Request(in io.Reader, out io.Writer) (*Request, er
 }
 
 func (s *Server) ProcessSocks5Request(in io.Reader, out io.Writer) (*Request, error) {
+	reply := &Reply{
+		VER:      Version5,
+		ATYPE:    s.Atype,
+		BindAddr: s.Addr,
+		BindPort: s.Port,
+	}
 	req := &Request{}
 	//[]byte{ver, cmd, rsv, atype}
 	cmd := make([]byte, 4)
@@ -226,6 +277,11 @@ func (s *Server) ProcessSocks5Request(in io.Reader, out io.Writer) (*Request, er
 		}
 		destAddr = make([]byte, fqdnLength[0])
 	default:
+		reply.REP = ADDRESS_TYPE_NOT_SUPPORTED
+		err = s.SendReply(out, reply)
+		if err != nil {
+			return nil, err
+		}
 		return nil, &AtypeError{req.ATYPE}
 	}
 	_, err = io.ReadAtLeast(in, destAddr, len(destAddr))
@@ -243,18 +299,20 @@ func (s *Server) ProcessSocks5Request(in io.Reader, out io.Writer) (*Request, er
 	req.DestPort = binary.BigEndian.Uint16(destPort)
 
 	switch req.CMD {
-	case CONNECT:
-		reply := SerializeSocks5Reply()
-		_, err := out.Write(reply)
+	case CONNECT, UDP_ASSOCIATE:
+		reply.REP = SUCCESSED
+		err = s.SendReply(out, reply)
 		if err != nil {
 			return nil, err
 		}
-	case BIND:
-		return nil, &CMDError{BIND}
-	case UDP_ASSOCIATE:
-		return nil, &CMDError{UDP_ASSOCIATE}
 	default:
-		return nil, &CMDError{cmd[0]}
+		reply.REP = COMMAND_NOT_SUPPORTED
+		err = s.SendReply(out, reply)
+		if err != nil {
+			return nil, err
+		}
+
+		return nil, &CMDError{req.CMD}
 	}
 
 	return req, nil
@@ -284,6 +342,28 @@ func (s *Server) Establish(req *Request) (dest net.Conn, err error) {
 		dest, err = nil, errNotEstablish
 	}
 	return
+}
+
+// SendReply Server send socks protocol reply to client
+func (s *Server) SendReply(out io.Writer, r *Reply) error {
+	var reply []byte
+	var err error
+	if r.VER == Version4 {
+		reply, err = SerializeSocks4Reply(r.REP, r.BindAddr, r.BindPort)
+		if err != nil {
+			return err
+		}
+	} else if r.VER == Version5 {
+		reply, err = SerializeSocks5Reply(r.REP, r.ATYPE, r.BindAddr, r.BindPort)
+		if err != nil {
+			return err
+		}
+	} else {
+		return &VersionError{r.VER}
+	}
+
+	_, err = out.Write(reply)
+	return err
 }
 
 // CheckVersion check version is 4 or 5.
