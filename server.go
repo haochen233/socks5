@@ -123,7 +123,7 @@ func (s *Server) HandShake(ctx context.Context, in io.Reader, out io.Writer) (*R
 			}
 		}
 
-		s.ProcessSocks4Request(in, out)
+		return s.ProcessSocks4Request(in, out)
 	}
 
 	//socks5 protocol authentication
@@ -176,7 +176,14 @@ func (s *Server) Authentication(in io.Reader, out io.Writer) error {
 	return errNoMethodAvailable
 }
 
+// ProcessSocks4Request receive socks4 protol client request and
+// send back a reply.
 func (s *Server) ProcessSocks4Request(in io.Reader, out io.Writer) (*Request, error) {
+	reply := &Reply{
+		VER:      Version4,
+		BindAddr: s.Addr,
+		BindPort: s.Port,
+	}
 	cmd := make([]byte, 1)
 	_, err := io.ReadAtLeast(in, cmd, 1)
 	if err != nil {
@@ -189,6 +196,7 @@ func (s *Server) ProcessSocks4Request(in io.Reader, out io.Writer) (*Request, er
 		return nil, err
 	}
 
+	//todo: should support socks4a
 	destIP := make([]byte, 4)
 	_, err = io.ReadAtLeast(in, destIP, 4)
 	if err != nil {
@@ -196,37 +204,24 @@ func (s *Server) ProcessSocks4Request(in io.Reader, out io.Writer) (*Request, er
 	}
 
 	//Discard later bytes until read EOF
-	_, err = io.ReadAll(in)
-	if err != io.EOF {
+	//Please see socks4 request format at(http://ftp.icm.edu.pl/packages/socks/socks4/SOCKS4.protocol)
+	err = UntilReadNull(in)
+	if err != nil {
 		return nil, err
 	}
 
 	switch cmd[0] {
 	case CONNECT:
-		reply, err := SerializeSocks4Reply(PERMIT, net.IPv4zero, 0)
+		reply.REP = PERMIT
+		err = s.SendReply(out, reply)
 		if err != nil {
 			return nil, err
 		}
-		_, err = out.Write(reply)
-		if err != nil {
-			return nil, err
-		}
-	case BIND:
-		reply, err := SerializeSocks4Reply(REJECT, net.IPv4zero, 0)
-		if err != nil {
-			return nil, err
-		}
-		_, err = out.Write(reply)
-		if err != nil {
-			return nil, err
-		}
-		return nil, &CMDError{BIND}
 	default:
-		reply, err := SerializeSocks4Reply(REJECT, net.IPv4zero, 0)
-		if err != nil {
-			return nil, err
-		}
-		_, err = out.Write(reply)
+		reply.REP = REJECT
+		reply.BindAddr = net.IPv4zero
+		reply.BindPort = 0
+		err = s.SendReply(out, reply)
 		if err != nil {
 			return nil, err
 		}
@@ -243,6 +238,8 @@ func (s *Server) ProcessSocks4Request(in io.Reader, out io.Writer) (*Request, er
 	}, nil
 }
 
+// ProcessSocks5Request receive socks5 protol client request and
+// send back a reply.
 func (s *Server) ProcessSocks5Request(in io.Reader, out io.Writer) (*Request, error) {
 	reply := &Reply{
 		VER:      Version5,
@@ -378,4 +375,18 @@ func CheckVersion(in io.Reader) (VER, error) {
 		return 0, &VersionError{version[0]}
 	}
 	return version[0], nil
+}
+
+// UntilReadNull Read all not Null byte and discard. Until read Null byte(all zero bits)
+func UntilReadNull(reader io.Reader) error {
+	data := make([]byte, 1)
+	for {
+		_, err := reader.Read(data)
+		if err != nil {
+			return err
+		}
+		if data[0] == 0 {
+			return nil
+		}
+	}
 }

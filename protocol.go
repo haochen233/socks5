@@ -74,6 +74,8 @@ var cmd2Str = map[CMD]string{
 	CONNECT:       "CONNECT",
 	BIND:          "BIND",
 	UDP_ASSOCIATE: "UDP_ASSOCIATE",
+	REJECT:        "REJECT",
+	PERMIT:        "PERMIT",
 }
 
 type REPError struct {
