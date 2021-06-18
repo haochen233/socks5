@@ -125,7 +125,10 @@ func (s *Server) HandShake(ctx context.Context, in io.Reader, out io.Writer) (*R
 	}
 
 	//socks5 protocol authentication
-	s.Authentication(in, out)
+	err = s.Authentication(in, out)
+	if err != nil {
+		return nil, err
+	}
 
 	//handle socks request
 	return s.ProcessSocks5Request(in, out)
@@ -165,6 +168,11 @@ func (s *Server) Authentication(in io.Reader, out io.Writer) error {
 		for m := range s.supportMethods {
 			//Select the first matched method to authenticate
 			if m == method {
+				reply := []byte{Version5, USERNAME_PASSWORD}
+				_, err := out.Write(reply)
+				if err != nil {
+					return err
+				}
 				return s.supportMethods[m].Authenticate(in, out)
 			}
 		}

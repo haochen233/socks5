@@ -46,11 +46,16 @@ func (u UserPwdAuth) Authenticate(in io.Reader, out io.Writer) error {
 
 	err = u.Validate(string(uname), string(passwd))
 	if err != nil {
+		reply := []byte{Version5, 1}
+		_, err1 := out.Write(reply)
+		if err1 != nil {
+			return err
+		}
 		return err
 	}
 
 	//authentication successful,then send reply to client
-	reply := []byte{Version5, 1}
+	reply := []byte{Version5, 0}
 	_, err = out.Write(reply)
 	if err != nil {
 		return err
@@ -69,23 +74,15 @@ func (u UserPwdAuth) Authenticate(in io.Reader, out io.Writer) error {
 //    +----+------+----------+------+----------+
 // For standard details, please see (https://www.rfc-editor.org/rfc/rfc1929.html)
 func (u UserPwdAuth) ReadUserPwd(in io.Reader) ([]byte, []byte, error) {
-	version, err := CheckVersion(in)
+
+	ulen := make([]byte, 2)
+	_, err := io.ReadAtLeast(in, ulen, len(ulen))
 	if err != nil {
 		return nil, nil, err
 	}
 
-	if version == Version4 {
-		return nil, nil, fmt.Errorf("Username/Password request version should be 5")
-	}
-
-	ulen := make([]byte, 1)
-	_, err = io.ReadAtLeast(in, ulen, 1)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	uname := make([]byte, ulen[0])
-	_, err = io.ReadAtLeast(in, uname, int(ulen[0]))
+	uname := make([]byte, ulen[1])
+	_, err = io.ReadAtLeast(in, uname, int(ulen[1]))
 	if err != nil {
 		return nil, nil, err
 	}
