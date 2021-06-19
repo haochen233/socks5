@@ -179,6 +179,12 @@ func (s *Server) Authentication(in io.Reader, out io.Writer) error {
 	}
 
 	//There are no Methods can use
+	reply := []byte{Version5, NO_ACCEPTABLE_METHODS}
+	_, err = out.Write(reply)
+	if err != nil {
+		return err
+	}
+	return nil
 	return errNoMethodAvailable
 }
 
