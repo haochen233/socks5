@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -184,7 +185,6 @@ func (s *Server) Authentication(in io.Reader, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	return nil
 	return errNoMethodAvailable
 }
 
@@ -225,7 +225,7 @@ func (s *Server) ProcessSocks4Request(in io.Reader, out io.Writer) (*Request, er
 
 	//Discard later bytes until read EOF
 	//Please see socks4 request format at(http://ftp.icm.edu.pl/packages/socks/socks4/SOCKS4.protocol)
-	err = ReadAndDiscardNotNullByte(in)
+	_, err = ReadUntilNULL(in)
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +240,7 @@ func (s *Server) ProcessSocks4Request(in io.Reader, out io.Writer) (*Request, er
 	//0.0.0.x, where x is non-zero
 	if destIP[0] == 0 && destIP[1] == 0 && destIP[2] == 0 &&
 		destIP[3] != 0 {
-		destIP, err = ReadNotNull(in)
+		destIP, err = ReadUntilNULL(in)
 		if err != nil {
 			return nil, err
 		}
@@ -363,6 +363,9 @@ var errNotEstablish = errors.New("unable to establish a connection to the remote
 func (s *Server) Establish(req *Request) (dest net.Conn, err error) {
 	switch req.CMD {
 	case CONNECT:
+		if req.Address() == "0.0.0.1:443" {
+			fmt.Println(req)
+		}
 		dest, err = net.Dial("tcp", req.Address())
 	case UDP_ASSOCIATE:
 		dest, err = net.Dial("udp", req.Address())
@@ -408,24 +411,9 @@ func CheckVersion(in io.Reader) (VER, error) {
 	return version[0], nil
 }
 
-// ReadAndDiscardNotNullByte Read all not Null byte and discard.
+// ReadUntilNULL Read all not Null byte.
 // Until read first Null byte(all zero bits)
-func ReadAndDiscardNotNullByte(reader io.Reader) error {
-	b := make([]byte, 1)
-	for {
-		_, err := reader.Read(b)
-		if err != nil {
-			return err
-		}
-		if b[0] == 0 {
-			return nil
-		}
-	}
-}
-
-// ReadNotNull Read all not Null byte.
-// Until read first Null byte(all zero bits)
-func ReadNotNull(reader io.Reader) ([]byte, error) {
+func ReadUntilNULL(reader io.Reader) ([]byte, error) {
 	data := &bytes.Buffer{}
 	b := make([]byte, 1)
 	for {
