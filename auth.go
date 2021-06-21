@@ -75,26 +75,23 @@ func (u UserPwdAuth) Authenticate(in io.Reader, out io.Writer) error {
 // For standard details, please see (https://www.rfc-editor.org/rfc/rfc1929.html)
 func (u UserPwdAuth) ReadUserPwd(in io.Reader) ([]byte, []byte, error) {
 
-	ulen := make([]byte, 2)
-	_, err := io.ReadAtLeast(in, ulen, len(ulen))
+	ulen, err := ReadNBytes(in, 2)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	uname := make([]byte, ulen[1])
-	_, err = io.ReadAtLeast(in, uname, int(ulen[1]))
+	uname, err := ReadNBytes(in, int(ulen[1]))
 	if err != nil {
 		return nil, nil, err
 	}
 
-	plen := make([]byte, 1)
-	_, err = io.ReadAtLeast(in, plen, 1)
+	plen, err := ReadNBytes(in, 1)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	passwd := make([]byte, plen[0])
-	_, err = io.ReadAtLeast(in, passwd, int(plen[0]))
+	passwd, err = ReadNBytes(in, int(plen[0]))
 	if err != nil {
 		return nil, nil, err
 	}

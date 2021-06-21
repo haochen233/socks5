@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -122,6 +121,7 @@ func (s *Server) HandShake(ctx context.Context, in io.Reader, out io.Writer) (*R
 			}
 		}
 
+		//handle socks4 request
 		return s.ProcessSocks4Request(in, out)
 	}
 
@@ -131,10 +131,8 @@ func (s *Server) HandShake(ctx context.Context, in io.Reader, out io.Writer) (*R
 		return nil, err
 	}
 
-	//handle socks request
+	//handle socks5 request
 	return s.ProcessSocks5Request(in, out)
-
-	return nil, err
 }
 
 var errNoMethodAvailable = errors.New("there is no method available")
@@ -142,15 +140,13 @@ var errNoMethodAvailable = errors.New("there is no method available")
 // Authentication socks5 authentication process
 func (s *Server) Authentication(in io.Reader, out io.Writer) error {
 	//get nMethods
-	nMethods := make([]byte, 1)
-	_, err := io.ReadAtLeast(in, nMethods, 1)
+	nMethods, err := ReadNBytes(in, 1)
 	if err != nil {
 		return err
 	}
 
 	//Get methods
-	methods := make([]byte, nMethods[0])
-	_, err = io.ReadAtLeast(in, methods, int(nMethods[0]))
+	methods, err := ReadNBytes(in, int(nMethods[0]))
 	if err != nil {
 		return err
 	}
@@ -201,23 +197,20 @@ func (s *Server) ProcessSocks4Request(in io.Reader, out io.Writer) (*Request, er
 		ATYPE: IPV4_ADDRESS,
 	}
 
-	cmd := make([]byte, 1)
-	_, err := io.ReadAtLeast(in, cmd, 1)
+	cmd, err := ReadNBytes(in, 1)
 	if err != nil {
 		return nil, err
 	}
 	req.CMD = cmd[0]
 
-	destPort := make([]byte, 2)
-	_, err = io.ReadAtLeast(in, destPort, 2)
+	destPort, err := ReadNBytes(in, 2)
 	if err != nil {
 		return nil, err
 	}
 	req.DestPort = binary.BigEndian.Uint16(destPort)
 
 	//todo: should support socks4a
-	destIP := make([]byte, 4)
-	_, err = io.ReadAtLeast(in, destIP, 4)
+	destIP, err := ReadNBytes(in, 4)
 	if err != nil {
 		return nil, err
 	}
@@ -280,8 +273,7 @@ func (s *Server) ProcessSocks5Request(in io.Reader, out io.Writer) (*Request, er
 	}
 	req := &Request{}
 	//[]byte{ver, cmd, rsv, atype}
-	cmd := make([]byte, 4)
-	_, err := io.ReadAtLeast(in, cmd, len(cmd))
+	cmd, err := ReadNBytes(in, 4)
 	if err != nil {
 		return nil, err
 	}
@@ -291,19 +283,18 @@ func (s *Server) ProcessSocks5Request(in io.Reader, out io.Writer) (*Request, er
 	req.ATYPE = cmd[3]
 
 	//Get dest addr
-	var destAddr []byte
+	var addrLen int
 	switch req.ATYPE {
 	case IPV4_ADDRESS:
-		destAddr = make([]byte, 4)
+		addrLen = 4
 	case IPV6_ADDRESS:
-		destAddr = make([]byte, 16)
+		addrLen = 16
 	case DOMAINNAME:
-		fqdnLength := make([]byte, 1)
-		_, err := io.ReadAtLeast(in, fqdnLength, len(fqdnLength))
+		fqdnLength, err := ReadNBytes(in, 1)
 		if err != nil {
 			return nil, err
 		}
-		destAddr = make([]byte, fqdnLength[0])
+		addrLen = int(fqdnLength[0])
 	default:
 		reply.REP = ADDRESS_TYPE_NOT_SUPPORTED
 		err = s.SendReply(out, reply)
@@ -312,15 +303,14 @@ func (s *Server) ProcessSocks5Request(in io.Reader, out io.Writer) (*Request, er
 		}
 		return nil, &AtypeError{req.ATYPE}
 	}
-	_, err = io.ReadAtLeast(in, destAddr, len(destAddr))
+	destAddr, err := ReadNBytes(in, addrLen)
 	if err != nil {
 		return nil, err
 	}
 	req.DestAddr = destAddr
 
 	//Get dest port
-	destPort := make([]byte, 2)
-	_, err = io.ReadAtLeast(in, destPort, 2)
+	destPort, err := ReadNBytes(in, 2)
 	if err != nil {
 		return nil, err
 	}
@@ -363,9 +353,6 @@ var errNotEstablish = errors.New("unable to establish a connection to the remote
 func (s *Server) Establish(req *Request) (dest net.Conn, err error) {
 	switch req.CMD {
 	case CONNECT:
-		if req.Address() == "0.0.0.1:443" {
-			fmt.Println(req)
-		}
 		dest, err = net.Dial("tcp", req.Address())
 	case UDP_ASSOCIATE:
 		dest, err = net.Dial("udp", req.Address())
@@ -399,8 +386,7 @@ func (s *Server) SendReply(out io.Writer, r *Reply) error {
 
 // CheckVersion check version is 4 or 5.
 func CheckVersion(in io.Reader) (VER, error) {
-	version := make([]VER, 1)
-	_, err := io.ReadAtLeast(in, version, 1)
+	version, err := ReadNBytes(in, 1)
 	if err != nil {
 		return 0, err
 	}
