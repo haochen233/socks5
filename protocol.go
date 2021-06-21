@@ -135,7 +135,7 @@ func (a *AtypeError) Error() string {
 	return fmt.Sprintf("unknown address type:%#x", a.ATYPE)
 }
 
-// ATYPE indicates adderss type in Request and Reply struct
+// ATYPE indicates address type in Request and Reply struct
 type ATYPE = uint8
 
 const (

@@ -1,6 +1,7 @@
 package socks5
 
 import (
+	"bytes"
 	"errors"
 	"io"
 )
@@ -22,4 +23,22 @@ func ReadNBytes(reader io.Reader, n int) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+// ReadUntilNULL Read all not Null byte.
+// Until read first Null byte(all zero bits)
+func ReadUntilNULL(reader io.Reader) ([]byte, error) {
+	data := &bytes.Buffer{}
+	b := make([]byte, 1)
+	for {
+		_, err := reader.Read(b)
+		if err != nil {
+			return nil, err
+		}
+
+		if b[0] == 0 {
+			return data.Bytes(), nil
+		}
+		data.WriteByte(b[0])
+	}
 }

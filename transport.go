@@ -2,20 +2,23 @@ package socks5
 
 import (
 	"io"
+	"net"
 )
 
 type Transport interface {
-	Transport(dst io.Writer, src io.Reader)
+	Transport(client net.Conn, remote net.Conn) error
 }
 
 type Buffer struct {
-	buf []byte
+	Bufsize int
 }
 
 func NewBuffer(size int) *Buffer {
-	return &Buffer{buf: make([]byte, size)}
+	return &Buffer{Bufsize: size}
 }
 
-func (b *Buffer) Transport(dst io.Writer, src io.Reader) {
-	io.CopyBuffer(dst, src, b.buf)
+func (b *Buffer) Transport(client net.Conn, remote net.Conn) error {
+	buf1 := make([]byte, b.Bufsize)
+	io.CopyBuffer(remote, client, buf1)
+	return nil
 }
