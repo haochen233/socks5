@@ -52,6 +52,9 @@ type Server struct {
 	// If nil, logging is done via log package's standard logger.
 	ErrorLog *log.Logger
 
+	// DisableSocks4, disable socks4 server, default enable socks4 compatible.
+	DisableSocks4 bool
+
 	// Server host type. It can be IPV4_ADDRESS. DOMAINNAME. IPV6_ADDRESS.
 	// parse from field Addr.
 	atype ATYPE
@@ -72,7 +75,7 @@ type Server struct {
 func (srv *Server) ListenAndServe() error {
 	addr := srv.Addr
 	if addr == "" {
-		addr = ":1080"
+		addr = "0.0.0.0:1080"
 	}
 
 	host, port, err := net.SplitHostPort(addr)
@@ -148,6 +151,8 @@ func (srv *Server) transport() Transporter {
 	return srv.Transporter
 }
 
+var errDisableSocks4 = errors.New("socks4 server has been disabled")
+
 // HandShake socks protocol handshake process
 func (srv *Server) handShake(client net.Conn) (*Request, error) {
 	//validate socks version message
@@ -158,7 +163,7 @@ func (srv *Server) handShake(client net.Conn) (*Request, error) {
 
 	//socks4 protocol process
 	if version == Version4 {
-		if !srv.IsAllowNoAuthRequired() {
+		if srv.DisableSocks4 {
 			//send server reject reply
 			reply, err := SerializeSocks4Reply(REJECT, net.IPv4zero, 0)
 			if err != nil {
@@ -168,6 +173,7 @@ func (srv *Server) handShake(client net.Conn) (*Request, error) {
 			if err != nil {
 				return nil, err
 			}
+			return nil, errDisableSocks4
 		}
 
 		//handle socks4 request
