@@ -456,6 +456,6 @@ func (srv *Server) logf(format string, args ...interface{}) {
 	if srv.ErrorLog == nil {
 		log.Printf(format, args...)
 	} else {
-		log.Printf(format, args...)
+		srv.ErrorLog.Printf(format, args...)
 	}
 }
