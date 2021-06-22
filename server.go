@@ -121,12 +121,14 @@ func (srv *Server) serveconn(client net.Conn) {
 	// handshake
 	request, err := srv.handShake(client)
 	if err != nil {
+		srv.logf(err.Error())
 		client.Close()
 		return
 	}
 	// establish connection to remote
 	remote, err := srv.establish(request)
 	if err != nil {
+		srv.logf(err.Error())
 		client.Close()
 		return
 	}
@@ -202,6 +204,7 @@ func (srv *Server) authentication(client net.Conn) error {
 func (srv *Server) processSocks4Request(client net.Conn) (*Request, error) {
 	reply := &Reply{
 		VER:      Version4,
+		ATYPE:    srv.atype,
 		BindAddr: srv.host,
 		BindPort: srv.port,
 	}

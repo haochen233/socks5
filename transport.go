@@ -22,13 +22,16 @@ func (t *transport) Transport(client net.Conn, remote net.Conn) error {
 	f := func(dst net.Conn, src net.Conn) {
 		inBuf := make([]byte, t.BufSize)
 		_, err := io.CopyBuffer(dst, src, inBuf)
-		if tcpWrite, ok := client.(*net.TCPConn); ok {
-			tcpWrite.CloseWrite()
+		if err != nil {
+			if tcpRead, ok := src.(*net.TCPConn); ok {
+				tcpRead.CloseRead()
+			}
+			if tcpWrite, ok := dst.(*net.TCPConn); ok {
+				tcpWrite.CloseWrite()
+			}
+			t.errCh <- err
 		}
-		if tcpRead, ok := remote.(*net.TCPConn); ok {
-			tcpRead.CloseRead()
-		}
-		t.errCh <- err
+		t.errCh <- nil
 	}
 	go f(remote, client)
 	go f(client, remote)
