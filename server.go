@@ -4,13 +4,14 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"strconv"
 	"time"
 )
 
-// CheckVersion check version is 4 or 5.
-func CheckVersion(in io.Reader) (VER, error) {
+// checkVersion check version is 4 or 5.
+func checkVersion(in io.Reader) (VER, error) {
 	version, err := ReadNBytes(in, 1)
 	if err != nil {
 		return 0, err
@@ -22,33 +23,48 @@ func CheckVersion(in io.Reader) (VER, error) {
 	return version[0], nil
 }
 
+// Server defines parameters for running socks server.
 type Server struct {
 	// Addr optionally specifies the TCP address for the server to listen on,
 	// in the form "host:port". If empty, ":1080" (port 1080) is used.
 	Addr string
+
+	// todo
+	// Unused in currently
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+
+	// method mapping to the authenticator
+	Authenticators map[METHOD]Authenticator
+
+	// The server select method to use policy
+	//MethodSelector
+
+	// Server transmit data between client and dest server.
+	// if nil, DefaultTransport is used.
+	Transporter
+
+	// ErrorLog specifics an options logger for errors accepting
+	// connections, unexpected socks protocol handshake process,
+	// and server to remote connection errors.
+	// If nil, logging is done via log package's standard logger
+	ErrorLog *log.Logger
+
 	// Server host type. It can be IPV4_ADDRESS. DOMAINNAME. IPV6_ADDRESS.
 	// parse from field Addr
 	atype ATYPE
+
 	// The server listen host.
 	// parse from field Addr.
 	host net.IP
+
 	// The server listen port.
 	// parse from field Addr
-	port         uint16
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	// different version map to different supported command
-	SupportCommand map[VER][]CMD
-	// method mapping to the authenticator
-	Authenticators map[METHOD]Authenticator
-	// The server select method to use policy
-	//MethodSelector
-	// Server transmit data between client adn dest server.
-	Transport
+	port uint16
 }
 
 // ListenAndServe listens on the TCP network address srv.Addr and then
-// calls Serve to handle requests on incoming connections.
+// calls serve to handle requests on incoming connections.
 //
 // If srv.Addr is blank, ":1080" is used.
 func (srv *Server) ListenAndServe() error {
@@ -83,52 +99,62 @@ func (srv *Server) ListenAndServe() error {
 	if err != nil {
 		return err
 	}
-	return srv.Serve(ln)
+	return srv.serve(ln)
 }
 
-// Serve accepts incoming connections on the Listener l, creating a
+// serve accepts incoming connections on the Listener l, creating a
 // new service goroutine for each. The service goroutine select client
 // list methods and reply client. Then process authentication and reply
 // to them. At then end of handshake, read socks request from client and
 // establish a connection to the target.
-func (srv *Server) Serve(l net.Listener) error {
+func (srv *Server) serve(l net.Listener) error {
 	for {
 		client, err := l.Accept()
 		if err != nil {
-
+			return err
 		}
-		go srv.serve(client)
+		go srv.serveconn(client)
 	}
-	return nil
 }
 
-func (srv *Server) serve(client net.Conn) {
+func (srv *Server) serveconn(client net.Conn) {
 	// handshake
 	request, err := srv.handShake(client)
 	if err != nil {
 		client.Close()
+		return
 	}
 	// establish connection to remote
 	remote, err := srv.establish(request)
 	if err != nil {
 		client.Close()
+		return
 	}
 	// transport data
-	go srv.Transport.Transport(client, remote)
-	go srv.Transport.Transport(remote, client)
+	err = srv.transport().Transport(client, remote)
+	if err != nil {
+		srv.logf(err.Error())
+	}
+}
+
+func (srv *Server) transport() Transporter {
+	if srv.Transporter == nil {
+		return DefaultTransporter
+	}
+	return srv.Transporter
 }
 
 // HandShake socks protocol handshake process
-func (s *Server) handShake(client net.Conn) (*Request, error) {
+func (srv *Server) handShake(client net.Conn) (*Request, error) {
 	//validate socks version message
-	version, err := CheckVersion(client)
+	version, err := checkVersion(client)
 	if err != nil {
 		return nil, err
 	}
 
 	//socks4 protocol process
 	if version == Version4 {
-		if !s.IsAllowNoAuthRequired() {
+		if !srv.IsAllowNoAuthRequired() {
 			//send server reject reply
 			reply, err := SerializeSocks4Reply(REJECT, net.IPv4zero, 0)
 			if err != nil {
@@ -141,21 +167,21 @@ func (s *Server) handShake(client net.Conn) (*Request, error) {
 		}
 
 		//handle socks4 request
-		return s.processSocks4Request(client)
+		return srv.processSocks4Request(client)
 	}
 
 	//socks5 protocol authentication
-	err = s.authentication(client)
+	err = srv.authentication(client)
 	if err != nil {
 		return nil, err
 	}
 
 	//handle socks5 request
-	return s.processSocks5Request(client)
+	return srv.processSocks5Request(client)
 }
 
 // Authentication socks5 authentication process
-func (s *Server) authentication(client net.Conn) error {
+func (srv *Server) authentication(client net.Conn) error {
 	//get nMethods
 	nMethods, err := ReadNBytes(client, 1)
 	if err != nil {
@@ -168,16 +194,16 @@ func (s *Server) authentication(client net.Conn) error {
 		return err
 	}
 
-	return s.MethodSelect(methods, client)
+	return srv.MethodSelect(methods, client)
 }
 
 // processSocks4Request receive socks4 protocol client request and
 // send back a reply.
-func (s *Server) processSocks4Request(client net.Conn) (*Request, error) {
+func (srv *Server) processSocks4Request(client net.Conn) (*Request, error) {
 	reply := &Reply{
 		VER:      Version4,
-		BindAddr: s.host,
-		BindPort: s.port,
+		BindAddr: srv.host,
+		BindPort: srv.port,
 	}
 	req := &Request{
 		VER:   Version4,
@@ -231,7 +257,7 @@ func (s *Server) processSocks4Request(client net.Conn) (*Request, error) {
 	switch req.CMD {
 	case CONNECT:
 		reply.REP = PERMIT
-		err = s.SendReply(client, reply)
+		err = srv.SendReply(client, reply)
 		if err != nil {
 			return nil, err
 		}
@@ -239,7 +265,7 @@ func (s *Server) processSocks4Request(client net.Conn) (*Request, error) {
 		reply.REP = REJECT
 		reply.BindAddr = net.IPv4zero
 		reply.BindPort = 0
-		err = s.SendReply(client, reply)
+		err = srv.SendReply(client, reply)
 		if err != nil {
 			return nil, err
 		}
@@ -251,12 +277,12 @@ func (s *Server) processSocks4Request(client net.Conn) (*Request, error) {
 
 // processSocks5Request receive socks5 protocol client request and
 // send back a reply.
-func (s *Server) processSocks5Request(client net.Conn) (*Request, error) {
+func (srv *Server) processSocks5Request(client net.Conn) (*Request, error) {
 	reply := &Reply{
 		VER:      Version5,
-		ATYPE:    s.atype,
-		BindAddr: s.host,
-		BindPort: s.port,
+		ATYPE:    srv.atype,
+		BindAddr: srv.host,
+		BindPort: srv.port,
 	}
 	req := &Request{}
 	//[]byte{ver, cmd, rsv, atype}
@@ -284,7 +310,7 @@ func (s *Server) processSocks5Request(client net.Conn) (*Request, error) {
 		addrLen = int(fqdnLength[0])
 	default:
 		reply.REP = ADDRESS_TYPE_NOT_SUPPORTED
-		err = s.SendReply(client, reply)
+		err = srv.SendReply(client, reply)
 		if err != nil {
 			return nil, err
 		}
@@ -306,13 +332,13 @@ func (s *Server) processSocks5Request(client net.Conn) (*Request, error) {
 	switch req.CMD {
 	case CONNECT, UDP_ASSOCIATE:
 		reply.REP = SUCCESSED
-		err = s.SendReply(client, reply)
+		err = srv.SendReply(client, reply)
 		if err != nil {
 			return nil, err
 		}
 	default:
 		reply.REP = COMMAND_NOT_SUPPORTED
-		err = s.SendReply(client, reply)
+		err = srv.SendReply(client, reply)
 		if err != nil {
 			return nil, err
 		}
@@ -326,11 +352,11 @@ func (s *Server) processSocks5Request(client net.Conn) (*Request, error) {
 // IsAllowNoAuthRequired  is server enable NO_AUTHENTICATION_REQUIRED method.
 // If enabled return true or the server don no Authenticator return true.
 // Otherwise return false.
-func (s *Server) IsAllowNoAuthRequired() bool {
-	if len(s.Authenticators) == 0 {
+func (srv *Server) IsAllowNoAuthRequired() bool {
+	if len(srv.Authenticators) == 0 {
 		return true
 	}
-	for method := range s.Authenticators {
+	for method := range srv.Authenticators {
 		if method == NO_AUTHENTICATION_REQUIRED {
 			return true
 		}
@@ -355,7 +381,7 @@ func (srv *Server) establish(req *Request) (dest net.Conn, err error) {
 var errErrorATPE = errors.New("socks4 server bind address type should be ipv4")
 
 // SendReply The server send socks protocol reply to client
-func (s *Server) SendReply(out io.Writer, r *Reply) error {
+func (srv *Server) SendReply(out io.Writer, r *Reply) error {
 	var reply []byte
 	var err error
 	if r.VER == Version4 {
@@ -386,11 +412,14 @@ func (s *Server) SendReply(out io.Writer, r *Reply) error {
 
 var errNoMethodAvailable = errors.New("there is no method available")
 
-func (s *Server) MethodSelect(methods []CMD, client net.Conn) error {
+// MethodSelect select authentication method and reply to client.
+// select NO_AUTHENTICATION_REQUIRED method if client provide 0x00 and
+// server provides nothing or provides NO_AUTHENTICATION_REQUIRED.
+func (srv *Server) MethodSelect(methods []CMD, client net.Conn) error {
 	//Select method to authenticate, then send selected method to client.
 	for _, method := range methods {
 		//Preferred to use NO_AUTHENTICATION_REQUIRED method
-		if method == NO_AUTHENTICATION_REQUIRED && s.IsAllowNoAuthRequired() {
+		if method == NO_AUTHENTICATION_REQUIRED && srv.IsAllowNoAuthRequired() {
 			reply := []byte{Version5, NO_AUTHENTICATION_REQUIRED}
 			_, err := client.Write(reply)
 			if err != nil {
@@ -398,7 +427,7 @@ func (s *Server) MethodSelect(methods []CMD, client net.Conn) error {
 			}
 			return nil
 		}
-		for m := range s.Authenticators {
+		for m := range srv.Authenticators {
 			//Select the first matched method to authenticate
 			if m == method {
 				reply := []byte{Version5, USERNAME_PASSWORD}
@@ -406,7 +435,7 @@ func (s *Server) MethodSelect(methods []CMD, client net.Conn) error {
 				if err != nil {
 					return err
 				}
-				return s.Authenticators[m].Authenticate(client, client)
+				return srv.Authenticators[m].Authenticate(client, client)
 			}
 		}
 	}
@@ -418,4 +447,12 @@ func (s *Server) MethodSelect(methods []CMD, client net.Conn) error {
 		return err
 	}
 	return errNoMethodAvailable
+}
+
+func (srv *Server) logf(format string, args ...interface{}) {
+	if srv.ErrorLog == nil {
+		log.Printf(format, args...)
+	} else {
+		log.Printf(format, args...)
+	}
 }

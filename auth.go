@@ -113,6 +113,15 @@ type MemoryStore struct {
 	algoSecret string
 }
 
+// NewMemeryStore return a new MemoryStore
+func NewMemeryStore(algo hash.Hash, secret string) *MemoryStore {
+	return &MemoryStore{
+		Users:      make(map[string][]byte),
+		Hash:       algo,
+		algoSecret: secret,
+	}
+}
+
 // Set the mapping of username and password
 func (m *MemoryStore) Set(username string, password string) error {
 	m.mu.Lock()
