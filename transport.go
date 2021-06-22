@@ -5,6 +5,7 @@ import (
 	"net"
 )
 
+// Transporter transmit data between client and dest server.
 type Transporter interface {
 	Transport(client net.Conn, remote net.Conn) error
 }
@@ -14,6 +15,7 @@ type transport struct {
 	errCh   chan error
 }
 
+// Transport use io.CopyBuffer transmit data
 func (t *transport) Transport(client net.Conn, remote net.Conn) error {
 	if t.errCh == nil {
 		t.errCh = make(chan error, 2)

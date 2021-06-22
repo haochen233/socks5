@@ -24,6 +24,7 @@ func checkVersion(in io.Reader) (VER, error) {
 }
 
 // Server defines parameters for running socks server.
+// The zero value for Server is a valid configuration(tcp listen on :1080).
 type Server struct {
 	// Addr optionally specifies the TCP address for the server to listen on,
 	// in the form "host:port". If empty, ":1080" (port 1080) is used.
@@ -35,6 +36,7 @@ type Server struct {
 	WriteTimeout time.Duration
 
 	// method mapping to the authenticator
+	// if nil server provide NO_AUTHENTICATION_REQUIRED method by default
 	Authenticators map[METHOD]Authenticator
 
 	// The server select method to use policy
@@ -47,11 +49,11 @@ type Server struct {
 	// ErrorLog specifics an options logger for errors accepting
 	// connections, unexpected socks protocol handshake process,
 	// and server to remote connection errors.
-	// If nil, logging is done via log package's standard logger
+	// If nil, logging is done via log package's standard logger.
 	ErrorLog *log.Logger
 
 	// Server host type. It can be IPV4_ADDRESS. DOMAINNAME. IPV6_ADDRESS.
-	// parse from field Addr
+	// parse from field Addr.
 	atype ATYPE
 
 	// The server listen host.
@@ -59,7 +61,7 @@ type Server struct {
 	host net.IP
 
 	// The server listen port.
-	// parse from field Addr
+	// parse from field Addr.
 	port uint16
 }
 
@@ -121,21 +123,21 @@ func (srv *Server) serveconn(client net.Conn) {
 	// handshake
 	request, err := srv.handShake(client)
 	if err != nil {
-		srv.logf(err.Error())
+		srv.logf()(err.Error())
 		client.Close()
 		return
 	}
 	// establish connection to remote
 	remote, err := srv.establish(request)
 	if err != nil {
-		srv.logf(err.Error())
+		srv.logf()(err.Error())
 		client.Close()
 		return
 	}
 	// transport data
 	err = srv.transport().Transport(client, remote)
 	if err != nil {
-		srv.logf(err.Error())
+		srv.logf()(err.Error())
 	}
 }
 
@@ -452,10 +454,9 @@ func (srv *Server) MethodSelect(methods []CMD, client net.Conn) error {
 	return errNoMethodAvailable
 }
 
-func (srv *Server) logf(format string, args ...interface{}) {
+func (srv *Server) logf() func(format string, args ...interface{}) {
 	if srv.ErrorLog == nil {
-		log.Printf(format, args...)
-	} else {
-		srv.ErrorLog.Printf(format, args...)
+		return log.Printf
 	}
+	return srv.ErrorLog.Printf
 }
