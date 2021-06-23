@@ -8,15 +8,16 @@ import (
 	"sync"
 )
 
+// Authenticator provides socks server's authentication.
 type Authenticator interface {
 	Authenticate(in io.Reader, out io.Writer) error
 }
 
-// NoAuth NO_AUTHENTICATION_REQUIRED
+// NoAuth NO_AUTHENTICATION_REQUIRED implementation.
 type NoAuth struct {
 }
 
-// Authenticate NO_AUTHENTICATION_REQUIRED Authentication for SOCKS V5
+// Authenticate NO_AUTHENTICATION_REQUIRED Authentication for socks5.
 func (n NoAuth) Authenticate(in io.Reader, out io.Writer) error {
 	//send reply to client,format is as follows:
 	//         +----+--------+
@@ -33,11 +34,12 @@ func (n NoAuth) Authenticate(in io.Reader, out io.Writer) error {
 	return nil
 }
 
+// UserPwdAuth provides Username/Password Authenticator.
 type UserPwdAuth struct {
 	UserPwdStore
 }
 
-// Authenticate Username/Password Authentication for SOCKS V5
+// Authenticate is Username/Password authentication method.
 func (u UserPwdAuth) Authenticate(in io.Reader, out io.Writer) error {
 	uname, passwd, err := u.ReadUserPwd(in)
 	if err != nil {
@@ -65,7 +67,7 @@ func (u UserPwdAuth) Authenticate(in io.Reader, out io.Writer) error {
 }
 
 // ReadUserPwd read Username/Password request from client
-// return username and password, when
+// return username and password.
 // Username/Password request format is as follows:
 //    +----+------+----------+------+----------+
 //    |VER | ULEN |  UNAME   | PLEN |  PASSWD  |
@@ -99,13 +101,15 @@ func (u UserPwdAuth) ReadUserPwd(in io.Reader) ([]byte, []byte, error) {
 	return uname, passwd, nil
 }
 
-// UserPwdStore provide username and password storage
+// UserPwdStore provide username and password storage.
 type UserPwdStore interface {
 	Set(username string, password string) error
 	Del(username string) error
 	Validate(username string, password string) error
 }
 
+// MemoryStore store username&password in memory.
+// the password is encrypt with hash method.
 type MemoryStore struct {
 	Users map[string][]byte
 	mu    sync.Mutex
@@ -122,7 +126,7 @@ func NewMemeryStore(algo hash.Hash, secret string) *MemoryStore {
 	}
 }
 
-// Set the mapping of username and password
+// Set the mapping of username and password.
 func (m *MemoryStore) Set(username string, password string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -134,7 +138,7 @@ func (m *MemoryStore) Set(username string, password string) error {
 }
 
 // UserNotExist the error type used in UserPwdStore.Del() method and
-// UserPwdStore.Validate method
+// UserPwdStore.Validate method.
 type UserNotExist struct {
 	username string
 }
@@ -155,7 +159,7 @@ func (m *MemoryStore) Del(username string) error {
 	return nil
 }
 
-// Validate validate username and password
+// Validate validate username and password.
 func (m *MemoryStore) Validate(username string, password string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

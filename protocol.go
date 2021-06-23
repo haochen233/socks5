@@ -38,7 +38,7 @@ const (
 	GSSAPI                     METHOD = 0x01
 	USERNAME_PASSWORD          METHOD = 0x02
 	IANA_ASSIGNED              METHOD = 0x03
-	NO_ACCEPTABLE_METHODS      METHOD = 0x05
+	NO_ACCEPTABLE_METHODS      METHOD = 0xff
 )
 
 var method2Str = map[METHOD]string{

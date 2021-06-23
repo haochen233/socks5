@@ -158,7 +158,8 @@ func (srv *Server) handShake(client net.Conn) (*Request, error) {
 	//validate socks version message
 	version, err := checkVersion(client)
 	if err != nil {
-		return nil, err
+		return nil, &OpError{Version5, "read", client.RemoteAddr(),
+			"\"check version\"", err}
 	}
 
 	//socks4 protocol process
@@ -167,11 +168,13 @@ func (srv *Server) handShake(client net.Conn) (*Request, error) {
 			//send server reject reply
 			reply, err := SerializeSocks4Reply(REJECT, net.IPv4zero, 0)
 			if err != nil {
-				return nil, err
+				return nil, &OpError{Version4, "", client.RemoteAddr(),
+					"\"encode reply\"", err}
 			}
 			_, err = client.Write(reply)
 			if err != nil {
-				return nil, err
+				return nil, &OpError{Version4, "write", client.RemoteAddr(),
+					"\"reply reject\"", err}
 			}
 			return nil, errDisableSocks4
 		}
@@ -223,20 +226,23 @@ func (srv *Server) processSocks4Request(client net.Conn) (*Request, error) {
 
 	cmd, err := ReadNBytes(client, 1)
 	if err != nil {
-		return nil, err
+		return nil, &OpError{Version4, "read", client.RemoteAddr(),
+			"\"process request command\"", err}
 	}
 	req.CMD = cmd[0]
 
 	destPort, err := ReadNBytes(client, 2)
 	if err != nil {
-		return nil, err
+		return nil, &OpError{Version4, "read", client.RemoteAddr(),
+			"\"process request dest port\"", err}
 	}
 	req.DestPort = binary.BigEndian.Uint16(destPort)
 
 	//todo: should support socks4a
 	destIP, err := ReadNBytes(client, 4)
 	if err != nil {
-		return nil, err
+		return nil, &OpError{Version4, "read", client.RemoteAddr(),
+			"\"process request dest ip\"", err}
 	}
 	req.DestAddr = destIP
 
@@ -244,7 +250,8 @@ func (srv *Server) processSocks4Request(client net.Conn) (*Request, error) {
 	//Please see socks4 request format at(http://ftp.icm.edu.pl/packages/socks/socks4/SOCKS4.protocol)
 	_, err = ReadUntilNULL(client)
 	if err != nil {
-		return nil, err
+		return nil, &OpError{Version4, "read", client.RemoteAddr(),
+			"\"process request useless header \"", err}
 	}
 
 	//Socks4a extension
@@ -259,7 +266,8 @@ func (srv *Server) processSocks4Request(client net.Conn) (*Request, error) {
 		destIP[3] != 0 {
 		destIP, err = ReadUntilNULL(client)
 		if err != nil {
-			return nil, err
+			return nil, &OpError{Version4, "read", client.RemoteAddr(),
+				"\"process socks4a extension request\"", err}
 		}
 		req.DestAddr = destIP
 		req.ATYPE = DOMAINNAME
@@ -270,7 +278,8 @@ func (srv *Server) processSocks4Request(client net.Conn) (*Request, error) {
 		reply.REP = PERMIT
 		err = srv.SendReply(client, reply)
 		if err != nil {
-			return nil, err
+			return nil, &OpError{Version4, "write", client.RemoteAddr(),
+				"\"process request permit\"", err}
 		}
 	default:
 		reply.REP = REJECT
@@ -278,9 +287,11 @@ func (srv *Server) processSocks4Request(client net.Conn) (*Request, error) {
 		reply.BindPort = 0
 		err = srv.SendReply(client, reply)
 		if err != nil {
-			return nil, err
+			return nil, &OpError{Version4, "write", client.RemoteAddr(),
+				"\"process request command not supported\"", err}
 		}
-		return nil, &CMDError{req.CMD}
+		return nil, &OpError{Version4, "", client.RemoteAddr(),
+			"\"process request command\"", &CMDError{req.CMD}}
 	}
 
 	return req, nil
@@ -299,7 +310,8 @@ func (srv *Server) processSocks5Request(client net.Conn) (*Request, error) {
 	//[]byte{ver, cmd, rsv, atype}
 	cmd, err := ReadNBytes(client, 4)
 	if err != nil {
-		return nil, err
+		return nil, &OpError{Version5, "read", client.RemoteAddr(),
+			"\"process request ver,cmd,rsv,atype\"", err}
 	}
 	req.VER = cmd[0]
 	req.CMD = cmd[1]
@@ -316,27 +328,32 @@ func (srv *Server) processSocks5Request(client net.Conn) (*Request, error) {
 	case DOMAINNAME:
 		fqdnLength, err := ReadNBytes(client, 1)
 		if err != nil {
-			return nil, err
+			return nil, &OpError{Version5, "read", client.RemoteAddr(),
+				"\"process request domain name length\"", err}
 		}
 		addrLen = int(fqdnLength[0])
 	default:
 		reply.REP = ADDRESS_TYPE_NOT_SUPPORTED
 		err = srv.SendReply(client, reply)
 		if err != nil {
-			return nil, err
+			return nil, &OpError{Version5, "write", client.RemoteAddr(),
+				"\"process request address type\"", err}
 		}
-		return nil, &AtypeError{req.ATYPE}
+		return nil, &OpError{Version5, "", client.RemoteAddr(),
+			"\"process request address type\"", &AtypeError{req.ATYPE}}
 	}
 	destAddr, err := ReadNBytes(client, addrLen)
 	if err != nil {
-		return nil, err
+		return nil, &OpError{Version5, "read", client.RemoteAddr(),
+			"\"process request dest addr\"", err}
 	}
 	req.DestAddr = destAddr
 
 	//Get dest port
 	destPort, err := ReadNBytes(client, 2)
 	if err != nil {
-		return nil, err
+		return nil, &OpError{Version5, "read", client.RemoteAddr(),
+			"\"process request dest port\"", err}
 	}
 	req.DestPort = binary.BigEndian.Uint16(destPort)
 
@@ -345,16 +362,19 @@ func (srv *Server) processSocks5Request(client net.Conn) (*Request, error) {
 		reply.REP = SUCCESSED
 		err = srv.SendReply(client, reply)
 		if err != nil {
-			return nil, err
+			return nil, &OpError{Version5, "write", client.RemoteAddr(),
+				"\"process request success\"", err}
 		}
 	default:
 		reply.REP = COMMAND_NOT_SUPPORTED
 		err = srv.SendReply(client, reply)
 		if err != nil {
-			return nil, err
+			return nil, &OpError{Version5, "write", client.RemoteAddr(),
+				"\"process request command not supported\"", err}
 		}
 
-		return nil, &CMDError{req.CMD}
+		return nil, &OpError{Version5, "", client.RemoteAddr(),
+			"\"process request command\"", &CMDError{req.CMD}}
 	}
 
 	return req, nil
@@ -421,8 +441,6 @@ func (srv *Server) SendReply(out io.Writer, r *Reply) error {
 //	MethodSelector(methods []CMD, client io.Writer) error
 //}
 
-var errNoMethodAvailable = errors.New("there is no method available")
-
 // MethodSelect select authentication method and reply to client.
 // select NO_AUTHENTICATION_REQUIRED method if client provide 0x00 and
 // server provides nothing or provides NO_AUTHENTICATION_REQUIRED.
@@ -457,7 +475,7 @@ func (srv *Server) MethodSelect(methods []CMD, client net.Conn) error {
 	if err != nil {
 		return err
 	}
-	return errNoMethodAvailable
+	return &MethodError{methods[0]}
 }
 
 func (srv *Server) logf() func(format string, args ...interface{}) {
@@ -465,4 +483,40 @@ func (srv *Server) logf() func(format string, args ...interface{}) {
 		return log.Printf
 	}
 	return srv.ErrorLog.Printf
+}
+
+// OpError is the error type usually returned by functions in the socks5
+// package. It describes the socks version, operation, client address,
+// and address of an error.
+type OpError struct {
+	// VER describe the socks server version on process.
+	VER
+
+	// Op is the operation which caused the error, such as
+	// "read", "write".
+	Op string
+
+	// Addr define client's address which caused the error.
+	Addr net.Addr
+
+	// Step is the client's current connection stage, such as
+	// "check version", "authentication", "process request",
+	Step string
+
+	// Err is the error that occurred during the operation.
+	// The Error method panics if the error is nil.
+	Err error
+}
+
+func (o *OpError) Error() string {
+	str := "socks" + strconv.Itoa(int(o.VER))
+	str += " " + o.Op
+	if o.Addr == nil {
+		str += " "
+	} else {
+		str += " " + o.Addr.String()
+	}
+	str += " " + o.Step
+	str += ":" + o.Err.Error()
+	return str
 }
