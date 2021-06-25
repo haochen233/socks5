@@ -32,3 +32,18 @@ func (r *Request) Address() string {
 	}
 	return net.JoinHostPort(r.DestAddr.String(), strconv.Itoa(int(r.DestPort)))
 }
+
+// UDPRequest Each UDP datagram carries a UDP request.
+//			+----+------+------+----------+----------+----------+
+//			|RSV | FRAG | ATYP | DST.ADDR | DST.PORT |   DATA   |
+//			+----+------+------+----------+----------+----------+
+//			| 2  |  1   |  1   | Variable |    2     | Variable |
+//+----+------+------+----------+----------+----------+
+type UDPRequest struct {
+	RSV  uint16
+	FRAG uint8
+	ATYPE
+	DestAddr net.IP
+	DestPort uint16
+	Data     []byte
+}
