@@ -8,17 +8,17 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 )
 
 type Client struct {
 	ProxyAddr string
 	ProxyConn net.Conn
 	net.Conn
-	Auth map[METHOD]interface{}
+	Auth       map[METHOD]interface{}
+	UDPTimout  int
+	TCPTimeout int
 }
-
-
-
 
 // MemoryStore store username&password in memory.
 // the password is encrypt with hash method.
@@ -70,7 +70,7 @@ func (clt *Client) Dial(network, addr string) (net.Conn, error) {
 		return clt.TCPDial(network, addr)
 	}
 	if network == "udp" {
-
+		return clt.UDPDial(network, nil, addr)
 	}
 	return nil, errors.New("net support network")
 }
@@ -163,7 +163,6 @@ func (clt *Client) HandShake(command CMD, addr string) (string, error) {
 		return "", errors.New("host unreachable")
 	}
 	return rspHead.BndAddr.String(), nil
-	//_,err:=clt.ProxyConn.Write(append())
 }
 
 type UserPassRequest struct {
@@ -334,4 +333,216 @@ type underConnect struct {
 
 type Connect struct {
 	*Client
+}
+
+func (clt *Client) UDPDial(network string, laddr *net.UDPAddr, raddr string) (net.Conn, error) {
+	bRemoteAddr, err := NewAddrByteFromString(raddr)
+
+	//remoteAddress, err := net.ResolveUDPAddr(network, raddr)
+	if err != nil {
+		return nil, err
+	}
+	clt.ProxyConn, err = net.Dial("tcp", clt.ProxyAddr)
+	if err != nil {
+		return nil, err
+	}
+	bndAddress, err := clt.HandShake(UDP_ASSOCIATE, raddr)
+	if err != nil {
+		return nil, err
+	}
+	ra, err := net.ResolveUDPAddr(network, bndAddress)
+	if err != nil {
+		clt.Close()
+		return nil, err
+	}
+	if laddr == nil {
+		ad := clt.ProxyConn.LocalAddr().(*net.TCPAddr)
+		laddr = &net.UDPAddr{
+			IP:   ad.IP,
+			Port: ad.Port,
+			Zone: ad.Zone,
+		}
+	}
+	udpConn, err := net.DialUDP(network, laddr, ra)
+	if err != nil {
+		clt.Close()
+		return nil, err
+	}
+	return &SocksUDPConn{
+		UDPConn: udpConn,
+		dstAddr: bRemoteAddr,
+		timeout: time.Duration(clt.UDPTimout) * time.Second,
+	}, nil
+}
+
+func NewAddrByteFromString(s string) (AddrByte, error) {
+	var addr []byte
+
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		return nil, fmt.Errorf("addr:%s SplitHostPort %v", s, err)
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		if ip4 := ip.To4(); ip4 != nil {
+			addr = make([]byte, 1+net.IPv4len+2)
+			addr[0] = IPV4_ADDRESS
+			copy(addr[1:], ip4)
+		} else {
+			addr = make([]byte, 1+net.IPv6len+2)
+			addr[0] = IPV6_ADDRESS
+			copy(addr[1:], ip)
+		}
+	} else {
+		if len(host) > 255 {
+			return nil, fmt.Errorf("host:%s too long", host)
+		}
+
+		addr = make([]byte, 1+1+len(host)+2)
+		addr[0] = DOMAINNAME
+		addr[1] = byte(len(host))
+		copy(addr[2:], host)
+	}
+
+	portNum, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return nil, fmt.Errorf("port:%s ParseUint %v", port, err)
+	}
+
+	addr[len(addr)-2], addr[len(addr)-1] = byte(portNum>>8), byte(portNum)
+	return addr, nil
+}
+
+type SocksUDPConn struct {
+	*net.UDPConn
+	dstAddr AddrByte
+	timeout time.Duration
+}
+
+const socketBufSize = 64 * 1024
+
+func (p *SocksUDPConn) Read(b []byte) (int, error) {
+	if p.timeout != 0 {
+		p.UDPConn.SetReadDeadline(time.Now().Add(p.timeout))
+	}
+
+	buf := make([]byte, socketBufSize)
+	n, err := p.UDPConn.Read(buf)
+	if err != nil {
+		return 0, err
+	}
+	d, err := NewUDPDatagramFromBytes(buf[0:n])
+	if err != nil {
+		return 0, err
+	}
+	if len(b) < len(d.Data) {
+		return 0, errors.New("buff too small")
+	}
+	n = copy(b, d.Data)
+	return n, nil
+}
+
+func (p *SocksUDPConn) Write(b []byte) (int, error) {
+	d := NewUDPDatagram(p.dstAddr, b)
+	payload := d.ToBytes()
+	n, err := p.UDPConn.Write(payload)
+	if err != nil {
+		return 0, err
+	}
+	if len(payload) != n {
+		return 0, errors.New("not write full")
+	}
+	return len(b), nil
+}
+
+func NewUDPDatagramFromBytes(b []byte) (*UDPDatagram, error) {
+	if len(b) < 4 {
+		return nil, fmt.Errorf("bad request")
+	}
+
+	bAddr, err := NewAddrByteFromByte(b[3:])
+	if err != nil {
+		return nil, err
+	}
+
+	data := b[3+len(bAddr):]
+	return NewUDPDatagram(bAddr, data), nil
+}
+
+const PortLen = 2
+
+func NewAddrByteFromByte(b []byte) ([]byte, error) {
+	if len(b) < 1 {
+		return nil, fmt.Errorf("bad request")
+	}
+	var startPos int = 1
+	var addrLen int
+	switch b[0] {
+	case DOMAINNAME:
+		if len(b) < 2 {
+			return nil, fmt.Errorf("bad request")
+		}
+		startPos++
+		addrLen = int(b[1])
+	case IPV4_ADDRESS:
+		addrLen = net.IPv4len
+	case IPV6_ADDRESS:
+		addrLen = net.IPv6len
+	default:
+		return nil, fmt.Errorf("Unrecognized address type")
+	}
+
+	endPos := startPos + addrLen + PortLen
+
+	if len(b) < endPos {
+		return nil, fmt.Errorf("bad request")
+	}
+	return b[:endPos], nil
+}
+
+type UDPDatagram struct {
+	Rsv     []byte //0x00,0x00
+	Frag    byte
+	AType   byte
+	DstAddr []byte
+	DstPort []byte
+	Data    []byte
+}
+
+func NewUDPDatagram(addrByte AddrByte, data []byte) *UDPDatagram {
+	atype, addr, port := addrByte.Split()
+	return &UDPDatagram{
+		Rsv:     []byte{0, 0},
+		Frag:    0,
+		AType:   atype,
+		DstAddr: addr,
+		DstPort: port,
+		Data:    data,
+	}
+}
+
+type AddrByte []byte
+
+func (a AddrByte) Split() (aType byte, addr []byte, port []byte) {
+	aType = IPV4_ADDRESS
+	addr = []byte{0, 0, 0, 0}
+	port = []byte{0, 0}
+
+	if a != nil {
+		aType = a[0]
+		addr = a[1 : len(a)-2]
+		port = a[len(a)-2:]
+	}
+	return
+}
+
+func (p *UDPDatagram) ToBytes() []byte {
+	b := []byte{}
+	b = append(b, p.Rsv...)
+	b = append(b, p.Frag)
+	b = append(b, p.AType)
+	b = append(b, p.DstAddr...)
+	b = append(b, p.DstPort...)
+	b = append(b, p.Data...)
+	return b
 }
