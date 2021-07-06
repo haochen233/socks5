@@ -2,7 +2,6 @@ package socks5
 
 import (
 	"encoding/binary"
-	"errors"
 	"net"
 )
 
@@ -45,8 +44,6 @@ func DeserializeSocks4Reply(b []byte) (*Reply, error) {
 	}
 	return reply, nil
 }
-
-var errDoaminMaxLengthLimit = errors.New("domain name out of max length")
 
 // SerializeSocks5Reply serialize socks5 reply to []byte
 func SerializeSocks5Reply(rep REP, atype ATYPE, addr net.IP, port uint16) ([]byte, error) {

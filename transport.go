@@ -7,7 +7,8 @@ import (
 
 // Transporter transmit data between client and dest server.
 type Transporter interface {
-	Transport(client net.Conn, remote net.Conn) error
+	TransportTCP(client net.Conn, remote net.Conn) error
+	TransportUDP(Server *net.UDPConn) error
 }
 
 type transport struct {
@@ -16,7 +17,7 @@ type transport struct {
 }
 
 // Transport use io.CopyBuffer transmit data
-func (t *transport) Transport(client net.Conn, remote net.Conn) error {
+func (t *transport) TransportTCP(client net.Conn, remote net.Conn) error {
 	if t.errCh == nil {
 		t.errCh = make(chan error, 2)
 	}
@@ -45,6 +46,10 @@ func (t *transport) Transport(client net.Conn, remote net.Conn) error {
 		}
 	}
 	return nil
+}
+
+func (t *transport) TransportUDP(Server *net.UDPConn) error {
+	panic("not implement this method currently!")
 }
 
 var DefaultTransporter Transporter = &transport{

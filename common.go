@@ -33,6 +33,9 @@ func ReadUntilNULL(reader io.Reader) ([]byte, error) {
 	for {
 		_, err := reader.Read(b)
 		if err != nil {
+			if err == io.EOF {
+				return nil, nil
+			}
 			return nil, err
 		}
 

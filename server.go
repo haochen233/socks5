@@ -1,7 +1,6 @@
 package socks5
 
 import (
-	"encoding/binary"
 	"errors"
 	"io"
 	"log"
@@ -131,16 +130,24 @@ func (srv *Server) serveconn(client net.Conn) {
 		return
 	}
 	// establish connection to remote
-	remote, err := srv.establish(request)
+	remote, err := srv.establish(client, request)
 	if err != nil {
 		srv.logf()(err.Error())
 		client.Close()
 		return
 	}
 	// transport data
-	err = srv.transport().Transport(client, remote)
-	if err != nil {
-		srv.logf()(err.Error())
+	if request.CMD == CONNECT {
+		err = srv.transport().TransportTCP(client, remote)
+		if err != nil {
+			srv.logf()(err.Error())
+		}
+	} else if request.CMD == UDP_ASSOCIATE {
+		udpServer := remote.(*net.UDPConn)
+		err = srv.transport().TransportUDP(udpServer)
+		if err != nil {
+			srv.logf()(err.Error())
+		}
 	}
 }
 
@@ -180,7 +187,7 @@ func (srv *Server) handShake(client net.Conn) (*Request, error) {
 		}
 
 		//handle socks4 request
-		return srv.processSocks4Request(client)
+		return srv.readSocks4Request(client)
 	}
 
 	//socks5 protocol authentication
@@ -190,7 +197,7 @@ func (srv *Server) handShake(client net.Conn) (*Request, error) {
 	}
 
 	//handle socks5 request
-	return srv.processSocks5Request(client)
+	return srv.readSocks5Request(client)
 }
 
 // Authentication socks5 authentication process
@@ -210,9 +217,8 @@ func (srv *Server) authentication(client net.Conn) error {
 	return srv.MethodSelect(methods, client)
 }
 
-// processSocks4Request receive socks4 protocol client request and
-// send back a reply.
-func (srv *Server) processSocks4Request(client net.Conn) (*Request, error) {
+// readSocks4Request receive socks4 protocol client request.
+func (srv *Server) readSocks4Request(client net.Conn) (*Request, error) {
 	reply := &Reply{
 		VER:      Version4,
 		ATYPE:    srv.atype,
@@ -223,83 +229,27 @@ func (srv *Server) processSocks4Request(client net.Conn) (*Request, error) {
 		VER:   Version4,
 		ATYPE: IPV4_ADDRESS,
 	}
-
+	// CMD
 	cmd, err := ReadNBytes(client, 1)
 	if err != nil {
-		return nil, &OpError{Version4, "read", client.RemoteAddr(),
-			"\"process request command\"", err}
+		return nil, &OpError{req.VER, "read", client.RemoteAddr(), "\"process request command\"", err}
 	}
 	req.CMD = cmd[0]
-
-	destPort, err := ReadNBytes(client, 2)
+	// DST.PORT, DST.IP
+	addr, rep, err := readAddress(client, req.VER)
 	if err != nil {
-		return nil, &OpError{Version4, "read", client.RemoteAddr(),
-			"\"process request dest port\"", err}
-	}
-	req.DestPort = binary.BigEndian.Uint16(destPort)
-
-	//todo: should support socks4a
-	destIP, err := ReadNBytes(client, 4)
-	if err != nil {
-		return nil, &OpError{Version4, "read", client.RemoteAddr(),
-			"\"process request dest ip\"", err}
-	}
-	req.DestAddr = destIP
-
-	//Discard later bytes until read EOF
-	//Please see socks4 request format at(http://ftp.icm.edu.pl/packages/socks/socks4/SOCKS4.protocol)
-	_, err = ReadUntilNULL(client)
-	if err != nil {
-		return nil, &OpError{Version4, "read", client.RemoteAddr(),
-			"\"process request useless header \"", err}
-	}
-
-	//Socks4a extension
-	// +----+----+----+----+----+----+----+----+----+----++----++-----+-----++----+
-	// | VN | CD | DSTPORT |      DSTIP        | USERID   |NULL|  HOSTNAME   |NULL|
-	// +----+----+----+----+----+----+----+----+----+----++----++-----+-----++----+
-	//    1    1      2              4           variable    1    variable    1
-	//The client sets the first three bytes of DSTIP to NULL and
-	//the last byte to non-zero. The corresponding IP address is
-	//0.0.0.x, where x is non-zero
-	if destIP[0] == 0 && destIP[1] == 0 && destIP[2] == 0 &&
-		destIP[3] != 0 {
-		destIP, err = ReadUntilNULL(client)
+		reply.REP = rep
+		err := srv.SendReply(client, reply)
 		if err != nil {
-			return nil, &OpError{Version4, "read", client.RemoteAddr(),
-				"\"process socks4a extension request\"", err}
+			return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request address type\"", err}
 		}
-		req.DestAddr = destIP
-		req.ATYPE = DOMAINNAME
 	}
-
-	switch req.CMD {
-	case CONNECT:
-		reply.REP = PERMIT
-		err = srv.SendReply(client, reply)
-		if err != nil {
-			return nil, &OpError{Version4, "write", client.RemoteAddr(),
-				"\"process request permit\"", err}
-		}
-	default:
-		reply.REP = REJECT
-		reply.BindAddr = net.IPv4zero
-		reply.BindPort = 0
-		err = srv.SendReply(client, reply)
-		if err != nil {
-			return nil, &OpError{Version4, "write", client.RemoteAddr(),
-				"\"process request command not supported\"", err}
-		}
-		return nil, &OpError{Version4, "", client.RemoteAddr(),
-			"\"process request command\"", &CMDError{req.CMD}}
-	}
-
+	req.Address = addr
 	return req, nil
 }
 
-// processSocks5Request receive socks5 protocol client request and
-// send back a reply.
-func (srv *Server) processSocks5Request(client net.Conn) (*Request, error) {
+// readSocks5Request read socks5 protocol client request.
+func (srv *Server) readSocks5Request(client net.Conn) (*Request, error) {
 	reply := &Reply{
 		VER:      Version5,
 		ATYPE:    srv.atype,
@@ -307,75 +257,24 @@ func (srv *Server) processSocks5Request(client net.Conn) (*Request, error) {
 		BindPort: srv.port,
 	}
 	req := &Request{}
-	//[]byte{ver, cmd, rsv, atype}
-	cmd, err := ReadNBytes(client, 4)
+	//VER, CMD, RSV
+	cmd, err := ReadNBytes(client, 3)
 	if err != nil {
-		return nil, &OpError{Version5, "read", client.RemoteAddr(),
-			"\"process request ver,cmd,rsv,atype\"", err}
+		return nil, &OpError{req.VER, "read", client.RemoteAddr(), "\"process request ver,cmd,rsv\"", err}
 	}
 	req.VER = cmd[0]
 	req.CMD = cmd[1]
 	req.RSV = cmd[2]
-	req.ATYPE = cmd[3]
-
-	//Get dest addr
-	var addrLen int
-	switch req.ATYPE {
-	case IPV4_ADDRESS:
-		addrLen = 4
-	case IPV6_ADDRESS:
-		addrLen = 16
-	case DOMAINNAME:
-		fqdnLength, err := ReadNBytes(client, 1)
-		if err != nil {
-			return nil, &OpError{Version5, "read", client.RemoteAddr(),
-				"\"process request domain name length\"", err}
-		}
-		addrLen = int(fqdnLength[0])
-	default:
-		reply.REP = ADDRESS_TYPE_NOT_SUPPORTED
-		err = srv.SendReply(client, reply)
-		if err != nil {
-			return nil, &OpError{Version5, "write", client.RemoteAddr(),
-				"\"process request address type\"", err}
-		}
-		return nil, &OpError{Version5, "", client.RemoteAddr(),
-			"\"process request address type\"", &AtypeError{req.ATYPE}}
-	}
-	destAddr, err := ReadNBytes(client, addrLen)
+	// DST.IP, DST.PORT
+	addr, rep, err := readAddress(client, req.VER)
 	if err != nil {
-		return nil, &OpError{Version5, "read", client.RemoteAddr(),
-			"\"process request dest addr\"", err}
-	}
-	req.DestAddr = destAddr
-
-	//Get dest port
-	destPort, err := ReadNBytes(client, 2)
-	if err != nil {
-		return nil, &OpError{Version5, "read", client.RemoteAddr(),
-			"\"process request dest port\"", err}
-	}
-	req.DestPort = binary.BigEndian.Uint16(destPort)
-
-	switch req.CMD {
-	case CONNECT, UDP_ASSOCIATE:
-		reply.REP = SUCCESSED
-		err = srv.SendReply(client, reply)
+		reply.REP = rep
+		err := srv.SendReply(client, reply)
 		if err != nil {
-			return nil, &OpError{Version5, "write", client.RemoteAddr(),
-				"\"process request success\"", err}
+			return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request address\"", err}
 		}
-	default:
-		reply.REP = COMMAND_NOT_SUPPORTED
-		err = srv.SendReply(client, reply)
-		if err != nil {
-			return nil, &OpError{Version5, "write", client.RemoteAddr(),
-				"\"process request command not supported\"", err}
-		}
-
-		return nil, &OpError{Version5, "", client.RemoteAddr(),
-			"\"process request command\"", &CMDError{req.CMD}}
 	}
+	req.Address = addr
 
 	return req, nil
 }
@@ -395,16 +294,77 @@ func (srv *Server) IsAllowNoAuthRequired() bool {
 	return false
 }
 
-var errUnknowNetwork = errors.New("server unknown network")
+// establish tcp connection to remote host if command is CONNECT or
+// start listen on udp socket when command is UDP_ASSOCIATE.
+// after send corresponding reply to client.
+func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err error) {
+	reply := &Reply{
+		VER:      req.VER,
+		ATYPE:    srv.atype,
+		BindAddr: srv.host,
+		BindPort: srv.port,
+	}
 
-func (srv *Server) establish(req *Request) (dest net.Conn, err error) {
-	switch req.CMD {
-	case CONNECT:
-		dest, err = net.Dial("tcp", req.Address())
-	case UDP_ASSOCIATE:
-		dest, err = net.Dial("udp", req.Address())
-	default:
-		dest, err = nil, errUnknowNetwork
+	// version4
+	if req.VER == Version4 {
+		switch req.CMD {
+		case CONNECT:
+			dest, err = net.Dial("tcp", req.Address.String())
+			if err != nil {
+				return nil, err
+			}
+			reply.REP = PERMIT
+			err = srv.SendReply(client, reply)
+			if err != nil {
+				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
+			}
+		default:
+			reply.REP = REJECT
+			reply.BindAddr = net.IPv4zero
+			reply.BindPort = 0
+			err = srv.SendReply(client, reply)
+			if err != nil {
+				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request command not supported\"", err}
+			}
+			return nil, &OpError{req.VER, "", client.RemoteAddr(), "\"process request command\"", &CMDError{req.CMD}}
+		}
+	} else if req.VER == Version5 { // version5
+		switch req.CMD {
+		case CONNECT:
+			dest, err = net.Dial("tcp", req.Address.String())
+			if err != nil {
+				return nil, err
+			}
+			reply.REP = SUCCESSED
+			err = srv.SendReply(client, reply)
+			if err != nil {
+				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request command\"", err}
+			}
+		case UDP_ASSOCIATE:
+			addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(srv.host.String(), "0"))
+			if err != nil {
+				return nil, err
+			}
+			dest, err = net.ListenUDP("udp", addr)
+			reply.REP = SUCCESSED
+			_, p, err := net.SplitHostPort(dest.LocalAddr().String())
+			port, err := strconv.Atoi(p)
+			reply.BindPort = uint16(port)
+			err = srv.SendReply(client, reply)
+			if err != nil {
+				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request command\"", err}
+			}
+		default:
+			reply.REP = COMMAND_NOT_SUPPORTED
+			err = srv.SendReply(client, reply)
+			if err != nil {
+				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request command\"", err}
+			}
+
+			return nil, &OpError{Version5, "", client.RemoteAddr(), "\"process request command\"", &CMDError{req.CMD}}
+		}
+	} else { // unknown version
+		return nil, &VersionError{req.VER}
 	}
 	return
 }
