@@ -54,17 +54,8 @@ type Server struct {
 	// DisableSocks4, disable socks4 server, default enable socks4 compatible.
 	DisableSocks4 bool
 
-	// Server host type. It can be IPV4_ADDRESS. DOMAINNAME. IPV6_ADDRESS.
-	// parse from field Addr.
-	atype ATYPE
-
-	// The server listen host.
-	// parse from field Addr.
-	host net.IP
-
-	// The server listen port.
-	// parse from field Addr.
-	port uint16
+	// Generate by Server.Addr field. For Server internal use only.
+	addr *Address
 }
 
 // ListenAndServe listens on the TCP network address srv.Addr and then
@@ -72,6 +63,9 @@ type Server struct {
 //
 // If srv.Addr is blank, ":1080" is used.
 func (srv *Server) ListenAndServe() error {
+	if srv.addr == nil {
+		srv.addr = new(Address)
+	}
 	addr := srv.Addr
 	if addr == "" {
 		addr = "0.0.0.0:1080"
@@ -84,20 +78,20 @@ func (srv *Server) ListenAndServe() error {
 
 	ip := net.ParseIP(host)
 	if ip == nil {
-		srv.atype = DOMAINNAME
-		srv.host = []byte(host)
+		srv.addr.ATYPE = DOMAINNAME
+		srv.addr.Addr = []byte(host)
 	} else if ip.To4() != nil {
-		srv.atype = IPV4_ADDRESS
-		srv.host = ip.To4()
+		srv.addr.ATYPE = IPV4_ADDRESS
+		srv.addr.Addr = ip.To4()
 	} else if ip.To16() != nil {
-		srv.atype = IPV6_ADDRESS
-		srv.host = ip.To16()
+		srv.addr.ATYPE = IPV6_ADDRESS
+		srv.addr.Addr = ip.To16()
 	}
 	atoi, err := strconv.Atoi(port)
 	if err != nil {
 		return err
 	}
-	srv.port = uint16(atoi)
+	srv.addr.Port = uint16(atoi)
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -165,23 +159,21 @@ func (srv *Server) handShake(client net.Conn) (*Request, error) {
 	//validate socks version message
 	version, err := checkVersion(client)
 	if err != nil {
-		return nil, &OpError{Version5, "read", client.RemoteAddr(),
-			"\"check version\"", err}
+		return nil, &OpError{Version5, "read", client.RemoteAddr(), "\"check version\"", err}
 	}
 
 	//socks4 protocol process
 	if version == Version4 {
 		if srv.DisableSocks4 {
 			//send server reject reply
-			reply, err := SerializeSocks4Reply(REJECT, net.IPv4zero, 0)
+			address := &Address{net.IPv4zero, IPV4_ADDRESS, 0}
+			addr, err := address.Bytes(Version4)
 			if err != nil {
-				return nil, &OpError{Version4, "", client.RemoteAddr(),
-					"\"encode reply\"", err}
+				return nil, &OpError{Version4, "", client.RemoteAddr(), "\"authentication\"", err}
 			}
-			_, err = client.Write(reply)
+			_, err = client.Write(append([]byte{0, REJECT}, addr...))
 			if err != nil {
-				return nil, &OpError{Version4, "write", client.RemoteAddr(),
-					"\"reply reject\"", err}
+				return nil, &OpError{Version4, "write", client.RemoteAddr(), "\"authentication\"", err}
 			}
 			return nil, errDisableSocks4
 		}
@@ -220,10 +212,8 @@ func (srv *Server) authentication(client net.Conn) error {
 // readSocks4Request receive socks4 protocol client request.
 func (srv *Server) readSocks4Request(client net.Conn) (*Request, error) {
 	reply := &Reply{
-		VER:      Version4,
-		ATYPE:    srv.atype,
-		BindAddr: srv.host,
-		BindPort: srv.port,
+		VER:     Version4,
+		Address: srv.addr,
 	}
 	req := &Request{
 		VER:   Version4,
@@ -239,7 +229,7 @@ func (srv *Server) readSocks4Request(client net.Conn) (*Request, error) {
 	addr, rep, err := readAddress(client, req.VER)
 	if err != nil {
 		reply.REP = rep
-		err := srv.SendReply(client, reply)
+		err := srv.sendReply(client, reply)
 		if err != nil {
 			return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request address type\"", err}
 		}
@@ -251,10 +241,8 @@ func (srv *Server) readSocks4Request(client net.Conn) (*Request, error) {
 // readSocks5Request read socks5 protocol client request.
 func (srv *Server) readSocks5Request(client net.Conn) (*Request, error) {
 	reply := &Reply{
-		VER:      Version5,
-		ATYPE:    srv.atype,
-		BindAddr: srv.host,
-		BindPort: srv.port,
+		VER:     Version5,
+		Address: srv.addr,
 	}
 	req := &Request{}
 	//VER, CMD, RSV
@@ -269,7 +257,7 @@ func (srv *Server) readSocks5Request(client net.Conn) (*Request, error) {
 	addr, rep, err := readAddress(client, req.VER)
 	if err != nil {
 		reply.REP = rep
-		err := srv.SendReply(client, reply)
+		err := srv.sendReply(client, reply)
 		if err != nil {
 			return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request address\"", err}
 		}
@@ -296,13 +284,11 @@ func (srv *Server) IsAllowNoAuthRequired() bool {
 
 // establish tcp connection to remote host if command is CONNECT or
 // start listen on udp socket when command is UDP_ASSOCIATE.
-// after send corresponding reply to client.
+// Finally, send corresponding reply to client.
 func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err error) {
 	reply := &Reply{
-		VER:      req.VER,
-		ATYPE:    srv.atype,
-		BindAddr: srv.host,
-		BindPort: srv.port,
+		VER:     req.VER,
+		Address: srv.addr,
 	}
 
 	// version4
@@ -314,15 +300,14 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 				return nil, err
 			}
 			reply.REP = PERMIT
-			err = srv.SendReply(client, reply)
+			err = srv.sendReply(client, reply)
 			if err != nil {
 				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
 			}
 		default:
 			reply.REP = REJECT
-			reply.BindAddr = net.IPv4zero
-			reply.BindPort = 0
-			err = srv.SendReply(client, reply)
+			reply.Address = &Address{net.IPv4zero, IPV4_ADDRESS, 0}
+			err = srv.sendReply(client, reply)
 			if err != nil {
 				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request command not supported\"", err}
 			}
@@ -336,12 +321,12 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 				return nil, err
 			}
 			reply.REP = SUCCESSED
-			err = srv.SendReply(client, reply)
+			err = srv.sendReply(client, reply)
 			if err != nil {
 				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request command\"", err}
 			}
 		case UDP_ASSOCIATE:
-			addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(srv.host.String(), "0"))
+			addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(srv.addr.Addr.String(), "0"))
 			if err != nil {
 				return nil, err
 			}
@@ -349,14 +334,14 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 			reply.REP = SUCCESSED
 			_, p, err := net.SplitHostPort(dest.LocalAddr().String())
 			port, err := strconv.Atoi(p)
-			reply.BindPort = uint16(port)
-			err = srv.SendReply(client, reply)
+			reply.Address.Port = uint16(port)
+			err = srv.sendReply(client, reply)
 			if err != nil {
 				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request command\"", err}
 			}
 		default:
 			reply.REP = COMMAND_NOT_SUPPORTED
-			err = srv.SendReply(client, reply)
+			err = srv.sendReply(client, reply)
 			if err != nil {
 				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request command\"", err}
 			}
@@ -371,23 +356,28 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 
 var errErrorATPE = errors.New("socks4 server bind address type should be ipv4")
 
-// SendReply The server send socks protocol reply to client
-func (srv *Server) SendReply(out io.Writer, r *Reply) error {
+// sendReply The server send socks protocol reply to client
+func (srv *Server) sendReply(out io.Writer, r *Reply) error {
 	var reply []byte
 	var err error
+
 	if r.VER == Version4 {
-		if r.ATYPE != IPV4_ADDRESS {
+		if r.Address.ATYPE != IPV4_ADDRESS {
 			return errErrorATPE
 		}
-		reply, err = SerializeSocks4Reply(r.REP, r.BindAddr, r.BindPort)
+		addr, err := r.Address.Bytes(r.VER)
 		if err != nil {
 			return err
 		}
+		reply = append(reply, 0, r.REP)
+		reply = append(reply, addr...)
 	} else if r.VER == Version5 {
-		reply, err = SerializeSocks5Reply(r.REP, r.ATYPE, r.BindAddr, r.BindPort)
+		addr, err := r.Address.Bytes(r.VER)
 		if err != nil {
 			return err
 		}
+		reply = append(reply, r.VER, r.REP, r.RSV)
+		reply = append(reply, addr...)
 	} else {
 		return &VersionError{r.VER}
 	}

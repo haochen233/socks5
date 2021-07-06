@@ -66,7 +66,6 @@ func (a *Address) Bytes(ver VER) ([]byte, error) {
 	switch ver {
 	case Version4:
 		// socks4a
-		buf.Write(port)
 		if a.ATYPE == DOMAINNAME {
 			buf.Write(net.IPv4(0, 0, 0, 1))
 			// NULL
@@ -76,10 +75,10 @@ func (a *Address) Bytes(ver VER) ([]byte, error) {
 			buf.WriteByte(0)
 		} else if a.ATYPE == IPV4_ADDRESS {
 			buf.Write(a.Addr)
-			buf.WriteByte(0)
 		} else {
 			return nil, &AtypeError{a.ATYPE}
 		}
+		buf.Write(port)
 	case Version5:
 		// address type
 		buf.WriteByte(a.ATYPE)
