@@ -24,7 +24,7 @@ var bufPool = sync.Pool{New: func() interface{} {
 // Examples:
 //	127.0.0.1:80
 //	example.com:443
-//  [fe80::1%lo0]:80
+// 	[fe80::1%lo0]:80
 func (a *Address) String() string {
 	if a.ATYPE == DOMAINNAME {
 		return net.JoinHostPort(string(a.Addr), strconv.Itoa(int(a.Port)))
@@ -99,9 +99,9 @@ func (a *Address) Bytes(ver VER) ([]byte, error) {
 
 // readAddress read address info from follows:
 // 		socks5 server's request.
-//  	socks5 client's reply.
+// 		socks5 client's reply.
 // 		socks5 server's udp reply header.
-//  	socks5 client's udp request header.
+// 		socks5 client's udp request header.
 //
 // 		socks4 server's  reply.
 //		socks4 client's  request.
