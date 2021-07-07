@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"sync"
 )
 
+// Address represents address in socks protocol
+// Client usage:
+//     addr := &Address{}
+// Server usage:
+//
 type Address struct {
 	Addr net.IP
 	ATYPE
@@ -35,16 +41,16 @@ func (a *Address) String() string {
 var errDoaminMaxLengthLimit = errors.New("domain name out of max length")
 
 // Bytes return bytes slice of Address by ver param.
-// if ver is socks4, the returned socks4 address format as follows:
+// If ver is socks4, the returned socks4 address format as follows:
 //    +----+----+----+----+----+----+....+----+....+----+
 //    | DSTPORT |      DSTIP        | USERID       |NULL|
 //    +----+----+----+----+----+----+----+----+....+----+
-// if ver is socks4 and address type is domain name,
+// If ver is socks4 and address type is domain name,
 // the returned socks4 address format as follows:
 //    +----+----+----+----+----+----+....+----+....+----+....+----+....+----+
 //    | DSTPORT |      DSTIP        | USERID       |NULL|   HOSTNAME   |NULL|
 //    +----+----+----+----+----+----+----+----+....+----+----+----+....+----+
-// if ver is socks5
+// If ver is socks5
 // the returned socks5 address format as follows:
 //    +------+----------+----------+
 //    | ATYP | DST.ADDR | DST.PORT |
@@ -52,7 +58,8 @@ var errDoaminMaxLengthLimit = errors.New("domain name out of max length")
 //    |  1   | Variable |    2     |
 //    +------+----------+----------+
 // Socks4 call this method return bytes end with NULL, socks4 client use normally,
-// socks4 server should trim terminative NULL.
+// Socks4 server should trim terminative NULL.
+// Socks4 server should not call this method if server address type is DOMAINNAME
 func (a *Address) Bytes(ver VER) ([]byte, error) {
 	buf := bufPool.Get().(*bytes.Buffer)
 	defer buf.Reset()
@@ -75,7 +82,7 @@ func (a *Address) Bytes(ver VER) ([]byte, error) {
 		} else if a.ATYPE == IPV4_ADDRESS {
 			buf.Write(a.Addr)
 		} else {
-			return nil, &AtypeError{a.ATYPE}
+			return nil, fmt.Errorf("socks4 unsupported address type: %#x", a.ATYPE)
 		}
 		buf.WriteByte(NULL)
 	case Version5:

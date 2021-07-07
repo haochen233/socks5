@@ -154,7 +154,7 @@ func (srv *Server) transport() Transporter {
 
 var errDisableSocks4 = errors.New("socks4 server has been disabled")
 
-// HandShake socks protocol handshake process
+// handShake socks protocol handshake process
 func (srv *Server) handShake(client net.Conn) (*Request, error) {
 	//validate socks version message
 	version, err := checkVersion(client)
@@ -192,7 +192,7 @@ func (srv *Server) handShake(client net.Conn) (*Request, error) {
 	return srv.readSocks5Request(client)
 }
 
-// Authentication socks5 authentication process
+// authentication socks5 authentication process
 func (srv *Server) authentication(client net.Conn) error {
 	//get nMethods
 	nMethods, err := ReadNBytes(client, 1)
