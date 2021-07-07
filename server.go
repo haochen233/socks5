@@ -370,7 +370,8 @@ func (srv *Server) sendReply(out io.Writer, r *Reply) error {
 			return err
 		}
 		reply = append(reply, 0, r.REP)
-		reply = append(reply, addr...)
+		// Remove NULL at the end. Please see Address.Bytes() Method.
+		reply = append(reply, addr[:len(addr)-1]...)
 	} else if r.VER == Version5 {
 		addr, err := r.Address.Bytes(r.VER)
 		if err != nil {

@@ -51,6 +51,8 @@ var errDoaminMaxLengthLimit = errors.New("domain name out of max length")
 //    +------+----------+----------+
 //    |  1   | Variable |    2     |
 //    +------+----------+----------+
+// Socks4 call this method return bytes end with NULL, socks4 client use normally,
+// socks4 server should trim terminative NULL.
 func (a *Address) Bytes(ver VER) ([]byte, error) {
 	buf := bufPool.Get().(*bytes.Buffer)
 	defer buf.Reset()
@@ -63,19 +65,19 @@ func (a *Address) Bytes(ver VER) ([]byte, error) {
 	switch ver {
 	case Version4:
 		// socks4a
+		buf.Write(port)
 		if a.ATYPE == DOMAINNAME {
 			buf.Write(net.IPv4(0, 0, 0, 1))
 			// NULL
-			buf.WriteByte(0)
+			buf.WriteByte(NULL)
 			// hostname
 			buf.Write(a.Addr)
-			buf.WriteByte(0)
 		} else if a.ATYPE == IPV4_ADDRESS {
 			buf.Write(a.Addr)
 		} else {
 			return nil, &AtypeError{a.ATYPE}
 		}
-		buf.Write(port)
+		buf.WriteByte(NULL)
 	case Version5:
 		// address type
 		buf.WriteByte(a.ATYPE)

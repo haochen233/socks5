@@ -149,3 +149,5 @@ var atype2Str = map[ATYPE]string{
 	DOMAINNAME:   "DOMAINNAME",
 	IPV6_ADDRESS: "IPV6_ADDRESS",
 }
+
+const NULL byte = 0

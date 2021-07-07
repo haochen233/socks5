@@ -39,7 +39,7 @@ func ReadUntilNULL(reader io.Reader) ([]byte, error) {
 			return nil, err
 		}
 
-		if b[0] == 0 {
+		if b[0] == NULL {
 			return data.Bytes(), nil
 		}
 		data.WriteByte(b[0])
