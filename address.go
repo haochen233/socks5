@@ -22,9 +22,9 @@ var bufPool = sync.Pool{New: func() interface{} {
 
 // Address return address
 // Examples:
-//	127.0.0.1:80
-//	example.com:443
-// 	[fe80::1%lo0]:80
+//    127.0.0.1:80
+//    example.com:443
+//    [fe80::1%lo0]:80
 func (a *Address) String() string {
 	if a.ATYPE == DOMAINNAME {
 		return net.JoinHostPort(string(a.Addr), strconv.Itoa(int(a.Port)))
@@ -36,24 +36,21 @@ var errDoaminMaxLengthLimit = errors.New("domain name out of max length")
 
 // Bytes return bytes slice of Address by ver param.
 // if ver is socks4, the returned socks4 address format as follows:
-//
-//		+----+----+----+----+----+----+....+----+....+----+
-//		| DSTPORT |      DSTIP        | USERID       |NULL|
-//		+----+----+----+----+----+----+----+----+....+----+
+//    +----+----+----+----+----+----+....+----+....+----+
+//    | DSTPORT |      DSTIP        | USERID       |NULL|
+//    +----+----+----+----+----+----+----+----+....+----+
 // if ver is socks4 and address type is domain name,
 // the returned socks4 address format as follows:
-//
-//		+----+----+----+----+----+----+....+----+....+----+....+----+....+----+
-//		| DSTPORT |      DSTIP        | USERID       |NULL|   HOSTNAME   |NULL|
-//		+----+----+----+----+----+----+----+----+....+----+----+----+....+----+
+//    +----+----+----+----+----+----+....+----+....+----+....+----+....+----+
+//    | DSTPORT |      DSTIP        | USERID       |NULL|   HOSTNAME   |NULL|
+//    +----+----+----+----+----+----+----+----+....+----+----+----+....+----+
 // if ver is socks5
 // the returned socks5 address format as follows:
-
-// 		+------+----------+----------+
-// 		| ATYP | DST.ADDR | DST.PORT |
-// 		+------+----------+----------+
-// 		|  1   | Variable |    2     |
-// 		+------+----------+----------+
+//    +------+----------+----------+
+//    | ATYP | DST.ADDR | DST.PORT |
+//    +------+----------+----------+
+//    |  1   | Variable |    2     |
+//    +------+----------+----------+
 func (a *Address) Bytes(ver VER) ([]byte, error) {
 	buf := bufPool.Get().(*bytes.Buffer)
 	defer buf.Reset()
@@ -97,15 +94,15 @@ func (a *Address) Bytes(ver VER) ([]byte, error) {
 }
 
 // readAddress read address info from follows:
-// 		socks5 server's request.
-// 		socks5 client's reply.
-// 		socks5 server's udp reply header.
-// 		socks5 client's udp request header.
+//    socks5 server's request.
+//    socks5 client's reply.
+//    socks5 server's udp reply header.
+//    socks5 client's udp request header.
 //
-// 		socks4 server's  reply.
-//		socks4 client's  request.
-// 		socks4a server's  reply.
-//		socks4a client's  request
+//    socks4 server's  reply.
+//    socks4 client's  request.
+//    socks4a server's  reply.
+//    socks4a client's  request
 func readAddress(r net.Conn, ver VER) (*Address, REP, error) {
 	addr := &Address{}
 
@@ -131,10 +128,10 @@ func readAddress(r net.Conn, ver VER) (*Address, REP, error) {
 		}
 
 		//Socks4a extension
-		// +----+----+----+----+----+----+----+----+----+----++----++-----+-----++----+
-		// | VN | CD | DSTPORT |      DSTIP        | USERID   |NULL|  HOSTNAME   |NULL|
-		// +----+----+----+----+----+----+----+----+----+----++----++-----+-----++----+
-		//    1    1      2              4           variable    1    variable    1
+		//    +----+----+----+----+----+----+----+----+----+----++----++-----+-----++----+
+		//    | VN | CD | DSTPORT |      DSTIP        | USERID   |NULL|  HOSTNAME   |NULL|
+		//    +----+----+----+----+----+----+----+----+----+----++----++-----+-----++----+
+		//       1    1      2              4           variable    1    variable    1
 		//The client sets the first three bytes of DSTIP to NULL and
 		//the last byte to non-zero. The corresponding IP address is
 		//0.0.0.x, where x is non-zero
