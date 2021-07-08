@@ -9,19 +9,6 @@ import (
 	"time"
 )
 
-// checkVersion check version is 4 or 5.
-func checkVersion(in io.Reader) (VER, error) {
-	version, err := ReadNBytes(in, 1)
-	if err != nil {
-		return 0, err
-	}
-
-	if (version[0] != Version5) && (version[0] != Version4) {
-		return 0, &VersionError{version[0]}
-	}
-	return version[0], nil
-}
-
 // Server defines parameters for running socks server.
 // The zero value for Server is a valid configuration(tcp listen on :1080).
 type Server struct {
@@ -426,6 +413,19 @@ func (srv *Server) logf() func(format string, args ...interface{}) {
 		return log.Printf
 	}
 	return srv.ErrorLog.Printf
+}
+
+// checkVersion check version is 4 or 5.
+func checkVersion(in io.Reader) (VER, error) {
+	version, err := ReadNBytes(in, 1)
+	if err != nil {
+		return 0, err
+	}
+
+	if (version[0] != Version5) && (version[0] != Version4) {
+		return 0, &VersionError{version[0]}
+	}
+	return version[0], nil
 }
 
 // OpError is the error type usually returned by functions in the socks5

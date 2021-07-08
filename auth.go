@@ -36,7 +36,7 @@ func (u UserPwdAuth) Authenticate(in io.Reader, out io.Writer) error {
 
 	err = u.Validate(string(uname), string(passwd))
 	if err != nil {
-		reply := []byte{Version5, 1}
+		reply := []byte{1, 1}
 		_, err1 := out.Write(reply)
 		if err1 != nil {
 			return err
@@ -45,7 +45,7 @@ func (u UserPwdAuth) Authenticate(in io.Reader, out io.Writer) error {
 	}
 
 	//authentication successful,then send reply to client
-	reply := []byte{Version5, 0}
+	reply := []byte{1, 0}
 	_, err = out.Write(reply)
 	if err != nil {
 		return err
