@@ -42,7 +42,7 @@ type Server struct {
 	DisableSocks4 bool
 
 	// Generate by Server.Addr field. For Server internal use only.
-	addr *Address
+	bindAddr *Address
 }
 
 // ListenAndServe listens on the TCP network address srv.Addr and then
@@ -50,8 +50,8 @@ type Server struct {
 //
 // If srv.Addr is blank, ":1080" is used.
 func (srv *Server) ListenAndServe() error {
-	if srv.addr == nil {
-		srv.addr = new(Address)
+	if srv.bindAddr == nil {
+		srv.bindAddr = new(Address)
 	}
 	addr := srv.Addr
 	if addr == "" {
@@ -65,20 +65,20 @@ func (srv *Server) ListenAndServe() error {
 
 	ip := net.ParseIP(host)
 	if ip == nil {
-		srv.addr.ATYPE = DOMAINNAME
-		srv.addr.Addr = []byte(host)
+		srv.bindAddr.ATYPE = DOMAINNAME
+		srv.bindAddr.Addr = []byte(host)
 	} else if ip.To4() != nil {
-		srv.addr.ATYPE = IPV4_ADDRESS
-		srv.addr.Addr = ip.To4()
+		srv.bindAddr.ATYPE = IPV4_ADDRESS
+		srv.bindAddr.Addr = ip.To4()
 	} else if ip.To16() != nil {
-		srv.addr.ATYPE = IPV6_ADDRESS
-		srv.addr.Addr = ip.To16()
+		srv.bindAddr.ATYPE = IPV6_ADDRESS
+		srv.bindAddr.Addr = ip.To16()
 	}
 	atoi, err := strconv.Atoi(port)
 	if err != nil {
 		return err
 	}
-	srv.addr.Port = uint16(atoi)
+	srv.bindAddr.Port = uint16(atoi)
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -200,7 +200,7 @@ func (srv *Server) authentication(client net.Conn) error {
 func (srv *Server) readSocks4Request(client net.Conn) (*Request, error) {
 	reply := &Reply{
 		VER:     Version4,
-		Address: srv.addr,
+		Address: srv.bindAddr,
 	}
 	req := &Request{
 		VER:   Version4,
@@ -229,7 +229,7 @@ func (srv *Server) readSocks4Request(client net.Conn) (*Request, error) {
 func (srv *Server) readSocks5Request(client net.Conn) (*Request, error) {
 	reply := &Reply{
 		VER:     Version5,
-		Address: srv.addr,
+		Address: srv.bindAddr,
 	}
 	req := &Request{}
 	//VER, CMD, RSV
@@ -274,7 +274,7 @@ func (srv *Server) IsAllowNoAuthRequired() bool {
 func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err error) {
 	reply := &Reply{
 		VER:     req.VER,
-		Address: srv.addr,
+		Address: srv.bindAddr,
 	}
 
 	// version4
@@ -312,7 +312,7 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request command\"", err}
 			}
 		case UDP_ASSOCIATE:
-			addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(srv.addr.Addr.String(), "0"))
+			addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(srv.bindAddr.Addr.String(), "0"))
 			if err != nil {
 				return nil, err
 			}

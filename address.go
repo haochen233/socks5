@@ -12,7 +12,7 @@ import (
 
 // Address represents address in socks protocol
 // Client usage:
-//     addr := &Address{}
+//     bindAddr := &Address{}
 // Server usage:
 //
 type Address struct {
