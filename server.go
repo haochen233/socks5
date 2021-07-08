@@ -267,9 +267,8 @@ func (srv *Server) readSocks5Request(client net.Conn) (*Request, error) {
 	return req, nil
 }
 
-// IsAllowNoAuthRequired  is server enable NO_AUTHENTICATION_REQUIRED method.
-// If enabled return true or the server don no Authenticator return true.
-// Otherwise return false.
+// IsAllowNoAuthRequired  return true if server enable NO_AUTHENTICATION_REQUIRED.
+// Or the server doesn't has no Authenticator return true. Otherwise return false.
 func (srv *Server) IsAllowNoAuthRequired() bool {
 	if len(srv.Authenticators) == 0 {
 		return true
@@ -387,16 +386,9 @@ func (srv *Server) sendReply(out io.Writer, r *Reply) error {
 	return err
 }
 
-//// MethodSelector select authentication method and reply to client.
-//type MethodSelector interface {
-//	MethodSelector(methods []CMD, client io.Writer) error
-//}
-
 // MethodSelect select authentication method and reply to client.
-// select NO_AUTHENTICATION_REQUIRED method if client provide 0x00 and
-// server provides nothing or provides NO_AUTHENTICATION_REQUIRED.
 func (srv *Server) MethodSelect(methods []CMD, client net.Conn) error {
-	//Select method to authenticate, then send selected method to client.
+	// Select method to authenticate, then send selected method to client.
 	for _, method := range methods {
 		//Preferred to use NO_AUTHENTICATION_REQUIRED method
 		if method == NO_AUTHENTICATION_REQUIRED && srv.IsAllowNoAuthRequired() {
@@ -410,7 +402,7 @@ func (srv *Server) MethodSelect(methods []CMD, client net.Conn) error {
 		for m := range srv.Authenticators {
 			//Select the first matched method to authenticate
 			if m == method {
-				reply := []byte{Version5, USERNAME_PASSWORD}
+				reply := []byte{Version5, method}
 				_, err := client.Write(reply)
 				if err != nil {
 					return err
@@ -420,7 +412,7 @@ func (srv *Server) MethodSelect(methods []CMD, client net.Conn) error {
 		}
 	}
 
-	//There are no Methods can use
+	// There are no Methods can use
 	reply := []byte{Version5, NO_ACCEPTABLE_METHODS}
 	_, err := client.Write(reply)
 	if err != nil {

@@ -19,18 +19,6 @@ type NoAuth struct {
 
 // Authenticate NO_AUTHENTICATION_REQUIRED Authentication for socks5.
 func (n NoAuth) Authenticate(in io.Reader, out io.Writer) error {
-	//send reply to client,format is as follows:
-	//    +----+--------+
-	//    |VER | METHOD |
-	//    +----+--------+
-	//    | 1  |   1    |
-	//    +----+--------+
-	reply := []byte{Version5, NO_AUTHENTICATION_REQUIRED}
-	_, err := out.Write(reply)
-	if err != nil {
-		return err
-	}
-
 	return nil
 }
 
