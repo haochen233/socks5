@@ -38,7 +38,7 @@ func (a *Address) String() string {
 	return net.JoinHostPort(a.Addr.String(), strconv.Itoa(int(a.Port)))
 }
 
-var errDoaminMaxLengthLimit = errors.New("domain name out of max length")
+var errDomainMaxLengthLimit = errors.New("domain name out of max length")
 
 // Bytes return bytes slice of Address by ver param.
 // If ver is socks4, the returned socks4 address format as follows:
@@ -91,7 +91,7 @@ func (a *Address) Bytes(ver VER) ([]byte, error) {
 		// domain name address type
 		if a.ATYPE == DOMAINNAME {
 			if len(a.Addr) > 255 {
-				return nil, errDoaminMaxLengthLimit
+				return nil, errDomainMaxLengthLimit
 			}
 			buf.WriteByte(byte(len(a.Addr)))
 		}
