@@ -380,7 +380,7 @@ func NewAddrByteFromString(s string) (AddrByte, error) {
 
 	host, port, err := net.SplitHostPort(s)
 	if err != nil {
-		return nil, fmt.Errorf("addr:%s SplitHostPort %v", s, err)
+		return nil, fmt.Errorf("bindAddr:%s SplitHostPort %v", s, err)
 	}
 
 	if ip := net.ParseIP(host); ip != nil {
