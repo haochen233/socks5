@@ -5,16 +5,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"sync"
 )
 
-// Address represents address in socks protocol
-// Client usage:
-//     bindAddr := &Address{}
-// Server usage:
-//
+// Address represents address in socks protocol.
 type Address struct {
 	Addr net.IP
 	ATYPE
@@ -112,7 +109,7 @@ func (a *Address) Bytes(ver VER) ([]byte, error) {
 //    socks4 client's  request.
 //    socks4a server's  reply.
 //    socks4a client's  request
-func readAddress(r net.Conn, ver VER) (*Address, REP, error) {
+func readAddress(r io.Reader, ver VER) (*Address, REP, error) {
 	addr := &Address{}
 
 	switch ver {
@@ -126,14 +123,15 @@ func readAddress(r net.Conn, ver VER) (*Address, REP, error) {
 		// DST.IP
 		ip, err := ReadNBytes(r, 4)
 		if err != nil {
-			return nil, GENERAL_SOCKS_SERVER_FAILURE, &OpError{Version4, "read", r.RemoteAddr(), "\"process request dest ip\"", err}
+			return nil, GENERAL_SOCKS_SERVER_FAILURE, &OpError{Version4, "read", nil, "\"process request dest ip\"", err}
 		}
+		addr.ATYPE = IPV4_ADDRESS
 
 		//Discard later bytes until read EOF
 		//Please see socks4 request format at(http://ftp.icm.edu.pl/packages/socks/socks4/SOCKS4.protocol)
 		_, err = ReadUntilNULL(r)
 		if err != nil {
-			return nil, GENERAL_SOCKS_SERVER_FAILURE, &OpError{Version4, "read", r.RemoteAddr(), "\"process request useless header \"", err}
+			return nil, GENERAL_SOCKS_SERVER_FAILURE, &OpError{Version4, "read", nil, "\"process request useless header \"", err}
 		}
 
 		//Socks4a extension
@@ -148,7 +146,7 @@ func readAddress(r net.Conn, ver VER) (*Address, REP, error) {
 			ip[3] != 0 {
 			ip, err = ReadUntilNULL(r)
 			if err != nil {
-				return nil, GENERAL_SOCKS_SERVER_FAILURE, &OpError{Version4, "read", r.RemoteAddr(), "\"process socks4a extension request\"", err}
+				return nil, GENERAL_SOCKS_SERVER_FAILURE, &OpError{Version4, "read", nil, "\"process socks4a extension request\"", err}
 			}
 			addr.ATYPE = DOMAINNAME
 		}
