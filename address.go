@@ -117,13 +117,13 @@ func readAddress(r io.Reader, ver VER) (*Address, REP, error) {
 		// DST.PORT
 		port, err := ReadNBytes(r, 2)
 		if err != nil {
-			return nil, GENERAL_SOCKS_SERVER_FAILURE, &OpError{Version5, "read", nil, "client dest port", err}
+			return nil, Rejected, &OpError{Version5, "read", nil, "client dest port", err}
 		}
 		addr.Port = binary.BigEndian.Uint16(port)
 		// DST.IP
 		ip, err := ReadNBytes(r, 4)
 		if err != nil {
-			return nil, GENERAL_SOCKS_SERVER_FAILURE, &OpError{Version4, "read", nil, "\"process request dest ip\"", err}
+			return nil, Rejected, &OpError{Version4, "read", nil, "\"process request dest ip\"", err}
 		}
 		addr.ATYPE = IPV4_ADDRESS
 
@@ -131,7 +131,7 @@ func readAddress(r io.Reader, ver VER) (*Address, REP, error) {
 		//Please see socks4 request format at(http://ftp.icm.edu.pl/packages/socks/socks4/SOCKS4.protocol)
 		_, err = ReadUntilNULL(r)
 		if err != nil {
-			return nil, GENERAL_SOCKS_SERVER_FAILURE, &OpError{Version4, "read", nil, "\"process request useless header \"", err}
+			return nil, Rejected, &OpError{Version4, "read", nil, "\"process request useless header \"", err}
 		}
 
 		//Socks4a extension
@@ -146,7 +146,7 @@ func readAddress(r io.Reader, ver VER) (*Address, REP, error) {
 			ip[3] != 0 {
 			ip, err = ReadUntilNULL(r)
 			if err != nil {
-				return nil, GENERAL_SOCKS_SERVER_FAILURE, &OpError{Version4, "read", nil, "\"process socks4a extension request\"", err}
+				return nil, Rejected, &OpError{Version4, "read", nil, "\"process socks4a extension request\"", err}
 			}
 			addr.ATYPE = DOMAINNAME
 		}
@@ -208,22 +208,23 @@ func (a *Address) TCPAddr() (*net.TCPAddr, error) {
 //    127.0.0.1:80
 //    example.com:443
 //    [fe80::1%lo0]:80
-func ParseAddress(addr string) (as *Address, err error) {
+func ParseAddress(addr string) (*Address, error) {
 	var host, port string
+	Address := new(Address)
 
-	host, port, err = net.SplitHostPort(addr)
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return
+		return nil, err
 	}
-	as.Port = binary.BigEndian.Uint16([]byte(port))
+	Address.Port = binary.BigEndian.Uint16([]byte(port))
 
 	ip := net.ParseIP(host)
 	if ip4 := ip.To4(); ip4 != nil {
-		as.ATYPE, as.Addr = IPV4_ADDRESS, ip
+		Address.ATYPE, Address.Addr = IPV4_ADDRESS, ip
 	} else if ip6 := ip.To16(); ip6 != nil {
-		as.ATYPE, as.Addr = IPV6_ADDRESS, ip
+		Address.ATYPE, Address.Addr = IPV6_ADDRESS, ip
 	} else {
-		as.ATYPE, as.Addr = DOMAINNAME, []byte(host)
+		Address.ATYPE, Address.Addr = DOMAINNAME, []byte(host)
 	}
-	return
+	return Address, nil
 }

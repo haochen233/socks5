@@ -58,27 +58,11 @@ func (srv *Server) ListenAndServe() error {
 		addr = "0.0.0.0:1080"
 	}
 
-	host, port, err := net.SplitHostPort(addr)
+	address, err := ParseAddress(addr)
 	if err != nil {
 		return err
 	}
-
-	ip := net.ParseIP(host)
-	if ip == nil {
-		srv.bindAddr.ATYPE = DOMAINNAME
-		srv.bindAddr.Addr = []byte(host)
-	} else if ip.To4() != nil {
-		srv.bindAddr.ATYPE = IPV4_ADDRESS
-		srv.bindAddr.Addr = ip.To4()
-	} else if ip.To16() != nil {
-		srv.bindAddr.ATYPE = IPV6_ADDRESS
-		srv.bindAddr.Addr = ip.To16()
-	}
-	atoi, err := strconv.Atoi(port)
-	if err != nil {
-		return err
-	}
-	srv.bindAddr.Port = uint16(atoi)
+	srv.bindAddr = address
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -118,17 +102,14 @@ func (srv *Server) serveconn(client net.Conn) {
 		return
 	}
 	// transport data
-	if request.CMD == CONNECT {
-		err = srv.transport().TransportTCP(client, remote)
-		if err != nil {
-			srv.logf()(err.Error())
-		}
-	} else if request.CMD == UDP_ASSOCIATE {
+	switch request.CMD {
+	case CONNECT:
+		srv.transport().TransportTCP(client, remote)
+	case UDP_ASSOCIATE:
 		udpServer := remote.(*net.UDPConn)
-		err = srv.transport().TransportUDP(udpServer)
-		if err != nil {
-			srv.logf()(err.Error())
-		}
+		srv.transport().TransportUDP(udpServer)
+	case BIND:
+		srv.logf()("not support bind command")
 	}
 }
 
@@ -158,7 +139,7 @@ func (srv *Server) handShake(client net.Conn) (*Request, error) {
 			if err != nil {
 				return nil, &OpError{Version4, "", client.RemoteAddr(), "\"authentication\"", err}
 			}
-			_, err = client.Write(append([]byte{0, REJECT}, addr...))
+			_, err = client.Write(append([]byte{0, Rejected}, addr...))
 			if err != nil {
 				return nil, &OpError{Version4, "write", client.RemoteAddr(), "\"authentication\"", err}
 			}
@@ -284,13 +265,52 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 			if err != nil {
 				return nil, err
 			}
-			reply.REP = PERMIT
+			reply.REP = Granted
 			err = srv.sendReply(client, reply)
 			if err != nil {
 				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
 			}
+		case BIND:
+			bindAddr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(srv.bindAddr.Addr.String(), "0"))
+			if err != nil {
+				return nil, err
+			}
+			// bind Server start listening.
+			bindServer, err := net.ListenTCP("tcp", bindAddr)
+			if err != nil {
+				return nil, err
+			}
+			defer bindServer.Close()
+			reply.REP = Granted
+			reply.Address, err = ParseAddress(bindServer.Addr().String())
+			if err != nil {
+				return nil, err
+			}
+			// send first reply to client.
+			err = srv.sendReply(client, reply)
+			if err != nil {
+				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
+			}
+
+			dest, err = bindServer.Accept()
+			if err != nil {
+				return nil, err
+			}
+			if req.Address.String() == dest.RemoteAddr().String() {
+				// send second reply to client.
+				err = srv.sendReply(client, reply)
+				if err != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
+				}
+			} else {
+				reply.REP = Rejected
+				err = srv.sendReply(client, reply)
+				if err != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
+				}
+			}
 		default:
-			reply.REP = REJECT
+			reply.REP = Rejected
 			reply.Address = &Address{net.IPv4zero, IPV4_ADDRESS, 0}
 			err = srv.sendReply(client, reply)
 			if err != nil {
@@ -354,7 +374,7 @@ func (srv *Server) sendReply(out io.Writer, r *Reply) error {
 		if err != nil {
 			return err
 		}
-		reply = append(reply, 0, r.REP)
+		reply = append(reply, r.VER, r.REP)
 		// Remove NULL at the end. Please see Address.Bytes() Method.
 		reply = append(reply, addr[:len(addr)-1]...)
 	} else if r.VER == Version5 {
