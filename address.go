@@ -192,3 +192,28 @@ func readAddress(r io.Reader, ver VER) (*Address, REP, error) {
 
 	return addr, SUCCESSED, nil
 }
+
+// ParseAddress parse address to *Address
+// Input Examples:
+//    127.0.0.1:80
+//    example.com:443
+//    [fe80::1%lo0]:80
+func ParseAddress(addr string) (as *Address, err error) {
+	var host, port string
+
+	host, port, err = net.SplitHostPort(addr)
+	if err != nil {
+		return
+	}
+	as.Port = binary.BigEndian.Uint16([]byte(port))
+
+	ip := net.ParseIP(host)
+	if ip4 := ip.To4(); ip4 != nil {
+		as.ATYPE, as.Addr = IPV4_ADDRESS, ip
+	} else if ip6 := ip.To16(); ip6 != nil {
+		as.ATYPE, as.Addr = IPV6_ADDRESS, ip
+	} else {
+		as.ATYPE, as.Addr = DOMAINNAME, []byte(host)
+	}
+	return
+}
