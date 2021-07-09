@@ -203,8 +203,7 @@ func (srv *Server) readSocks4Request(client net.Conn) (*Request, error) {
 		Address: srv.bindAddr,
 	}
 	req := &Request{
-		VER:   Version4,
-		ATYPE: IPV4_ADDRESS,
+		VER: Version4,
 	}
 	// CMD
 	cmd, err := ReadNBytes(client, 1)
