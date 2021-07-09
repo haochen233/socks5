@@ -239,7 +239,7 @@ func (srv *Server) readSocks5Request(client net.Conn) (*Request, error) {
 	req.VER = cmd[0]
 	req.CMD = cmd[1]
 	req.RSV = cmd[2]
-	// DST.IP, DST.PORT
+	// ATYPE, DST.IP, DST.PORT
 	addr, rep, err := readAddress(client, req.VER)
 	if err != nil {
 		reply.REP = rep

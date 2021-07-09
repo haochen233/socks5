@@ -193,6 +193,16 @@ func readAddress(r io.Reader, ver VER) (*Address, REP, error) {
 	return addr, SUCCESSED, nil
 }
 
+// UDPAddr return UDP Address.
+func (a *Address) UDPAddr() (*net.UDPAddr, error) {
+	return net.ResolveUDPAddr("udp", a.String())
+}
+
+// TCPAddr return TCP Address.
+func (a *Address) TCPAddr() (*net.TCPAddr, error) {
+	return net.ResolveTCPAddr("tcp", a.String())
+}
+
 // ParseAddress parse address to *Address
 // Input Examples:
 //    127.0.0.1:80
