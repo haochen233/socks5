@@ -74,8 +74,8 @@ var cmd2Str = map[CMD]string{
 	CONNECT:       "CONNECT",
 	BIND:          "BIND",
 	UDP_ASSOCIATE: "UDP_ASSOCIATE",
-	REJECT:        "REJECT",
-	PERMIT:        "PERMIT",
+	Rejected:      "Rejected",
+	Granted:       "Granted",
 }
 
 type REPError struct {
@@ -121,10 +121,10 @@ var rep2Str = map[REP]string{
 
 //socks4 reply
 const (
-	// PERMIT means server allow  client request
-	PERMIT = 90
-	// REJECT means server refuse client request
-	REJECT = 91
+	// Granted means server allow  client request
+	Granted = 90
+	// Rejected means server refuse client request
+	Rejected = 91
 )
 
 type AtypeError struct {
