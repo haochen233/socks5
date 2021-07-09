@@ -209,22 +209,28 @@ func (a *Address) TCPAddr() (*net.TCPAddr, error) {
 //    example.com:443
 //    [fe80::1%lo0]:80
 func ParseAddress(addr string) (*Address, error) {
-	var host, port string
 	Address := new(Address)
 
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
 	}
-	Address.Port = binary.BigEndian.Uint16([]byte(port))
 
 	ip := net.ParseIP(host)
-	if ip4 := ip.To4(); ip4 != nil {
-		Address.ATYPE, Address.Addr = IPV4_ADDRESS, ip
-	} else if ip6 := ip.To16(); ip6 != nil {
-		Address.ATYPE, Address.Addr = IPV6_ADDRESS, ip
-	} else {
-		Address.ATYPE, Address.Addr = DOMAINNAME, []byte(host)
+	if ip == nil {
+		Address.ATYPE = DOMAINNAME
+		Address.Addr = []byte(host)
+	} else if ip.To4() != nil {
+		Address.ATYPE = IPV4_ADDRESS
+		Address.Addr = ip.To4()
+	} else if ip.To16() != nil {
+		Address.ATYPE = IPV6_ADDRESS
+		Address.Addr = ip.To16()
 	}
+	atoi, err := strconv.Atoi(port)
+	if err != nil {
+		return nil, err
+	}
+	Address.Port = uint16(atoi)
 	return Address, nil
 }

@@ -261,8 +261,14 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 	if req.VER == Version4 {
 		switch req.CMD {
 		case CONNECT:
+			// dial dest host.
 			dest, err = net.Dial("tcp", req.Address.String())
 			if err != nil {
+				reply.REP = Rejected
+				err = srv.sendReply(client, reply)
+				if err != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
+				}
 				return nil, err
 			}
 			reply.REP = Granted
@@ -278,6 +284,11 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 			// bind Server start listening.
 			bindServer, err := net.ListenTCP("tcp", bindAddr)
 			if err != nil {
+				reply.REP = Rejected
+				err = srv.sendReply(client, reply)
+				if err != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
+				}
 				return nil, err
 			}
 			defer bindServer.Close()
@@ -291,9 +302,14 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 			if err != nil {
 				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
 			}
-
+			// waiting target host connect.
 			dest, err = bindServer.Accept()
 			if err != nil {
+				reply.REP = Rejected
+				err = srv.sendReply(client, reply)
+				if err != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
+				}
 				return nil, err
 			}
 			if req.Address.String() == dest.RemoteAddr().String() {
@@ -321,8 +337,14 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 	} else if req.VER == Version5 { // version5
 		switch req.CMD {
 		case CONNECT:
+			// dial dest host.
 			dest, err = net.Dial("tcp", req.Address.String())
 			if err != nil {
+				reply.REP = HOST_UNREACHABLE
+				err = srv.sendReply(client, reply)
+				if err != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
+				}
 				return nil, err
 			}
 			reply.REP = SUCCESSED
@@ -336,6 +358,14 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 				return nil, err
 			}
 			dest, err = net.ListenUDP("udp", addr)
+			if err != nil {
+				reply.REP = GENERAL_SOCKS_SERVER_FAILURE
+				err = srv.sendReply(client, reply)
+				if err != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
+				}
+				return nil, err
+			}
 			reply.REP = SUCCESSED
 			_, p, err := net.SplitHostPort(dest.LocalAddr().String())
 			port, err := strconv.Atoi(p)
@@ -344,6 +374,59 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 			if err != nil {
 				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request command\"", err}
 			}
+		case BIND:
+			bindAddr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(srv.bindAddr.Addr.String(), "0"))
+			if err != nil {
+				return nil, err
+			}
+			// bind Server start listening.
+			bindServer, err := net.ListenTCP("tcp", bindAddr)
+			if err != nil {
+				reply.REP = GENERAL_SOCKS_SERVER_FAILURE
+				err = srv.sendReply(client, reply)
+				if err != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
+				}
+				return nil, err
+			}
+			defer bindServer.Close()
+			reply.REP = SUCCESSED
+			reply.Address, err = ParseAddress(bindServer.Addr().String())
+			if err != nil {
+				return nil, err
+			}
+			// send first reply to client.
+			err = srv.sendReply(client, reply)
+			if err != nil {
+				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
+			}
+			dest, err = bindServer.Accept()
+			if err != nil {
+				reply.REP = GENERAL_SOCKS_SERVER_FAILURE
+				err = srv.sendReply(client, reply)
+				if err != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
+				}
+				return nil, err
+			}
+			if req.Address.String() == dest.RemoteAddr().String() {
+				// send second reply to client.
+				reply.Address, err = ParseAddress(dest.RemoteAddr().String())
+				if err != nil {
+					return nil, err
+				}
+				err = srv.sendReply(client, reply)
+				if err != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
+				}
+			} else {
+				reply.REP = GENERAL_SOCKS_SERVER_FAILURE
+				err = srv.sendReply(client, reply)
+				if err != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request permit\"", err}
+				}
+			}
+
 		default:
 			reply.REP = COMMAND_NOT_SUPPORTED
 			err = srv.sendReply(client, reply)
