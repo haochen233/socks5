@@ -15,9 +15,7 @@ import (
 type Client struct {
 	// in the form "host:port". If empty, ":1080" (port 1080) is used.
 	ProxyAddr string
-	ProxyConn net.Conn
 	net.Conn
-	VER
 
 	// method mapping to the authenticator
 	Auth       map[METHOD]interface{}
@@ -54,10 +52,9 @@ func (m *PwdStore) Set(username string, password string) error {
 }
 
 // NewClient create a client
-func NewClient(proxyAddr string, version VER, opts interface{}) *Client {
+func NewClient(proxyAddr string, opts interface{}) *Client {
 	c := &Client{
 		ProxyAddr: proxyAddr,
-		VER:       version,
 	}
 	if opts != nil {
 		switch value := opts.(type) {
@@ -68,65 +65,46 @@ func NewClient(proxyAddr string, version VER, opts interface{}) *Client {
 	return c
 }
 
-func (clt *Client) Close() (err error) {
-	if clt.ProxyConn != nil {
-		err = clt.ProxyConn.Close()
-	}
-	if clt.Conn != nil {
-		err = clt.Conn.Close()
-	}
-	return
-}
-
 func (clt *Client) connServe() {
 
 }
 
-func (clt *Client) Dial(network, addr string) (net.Conn, error) {
-	if network == "tcp" {
-		return clt.TCPDial(addr)
+func (clt *Client) Dial(request *Request) (net.Conn, error) {
+	switch request.CMD {
+	case BIND, CONNECT:
+		return clt.DialTCP(request)
+	case UDP_ASSOCIATE:
+		return clt.DialUDP(request)
+	default:
+		return nil, errors.New("net support network")
 	}
-	if network == "udp" {
-		return clt.UDPDial(nil, addr)
-	}
-	return nil, errors.New("net support network")
 }
 
-func (clt *Client) TCPDial(addr string) (net.Conn, error) {
+func (clt *Client) DialTCP(request *Request) (net.Conn, error) {
 	proxyConn, err := net.Dial("tcp", clt.ProxyAddr)
 	if err != nil {
 		return nil, err
 	}
-	clt.ProxyConn = proxyConn
-	if _, err := clt.handShake(CONNECT, addr); err != nil {
+	if _, err := clt.handShake(request, proxyConn); err != nil {
 		clt.Close()
 		return nil, err
 	}
-	return clt.ProxyConn, nil
+	return proxyConn, nil
 }
 
 // handShake socks protocol handshake process
-func (clt *Client) handShake(command CMD, addr string) (string, error) {
-	destAddr, err := ParseAddress(addr)
-	if err != nil {
-		return "", err
-	}
-	request := Request{
-		VER:     clt.VER,
-		CMD:     command,
-		Address: destAddr,
-	}
-	if clt.VER == Version5 {
-		err := clt.authentication()
+func (clt *Client) handShake(request *Request, proxyConn net.Conn) (string, error) {
+	if request.VER == Version5 {
+		err := clt.authentication(proxyConn)
 		if err != nil {
 			return "", err
 		}
-		clt.socks5Request(&request)
-	} else if clt.VER == Version4 {
-		clt.socks4Request(&request)
+		clt.socks5Request(request, proxyConn)
+	} else if request.VER == Version4 {
+		clt.socks4Request(request, proxyConn)
 	}
 
-	reply, err := clt.parseReply(clt.ProxyConn)
+	reply, err := clt.parseReply(request, proxyConn)
 	if err != nil {
 		return "", err
 	}
@@ -136,18 +114,18 @@ func (clt *Client) handShake(command CMD, addr string) (string, error) {
 	return reply.Address.String(), nil
 }
 
-func (clt *Client) authentication() error {
+func (clt *Client) authentication(proxyConn net.Conn) error {
 	var methods []byte
 	methods = append(methods, NO_AUTHENTICATION_REQUIRED)
 	if clt.Auth != nil {
 		methods = append(methods, USERNAME_PASSWORD)
 	}
 
-	_, err := clt.ProxyConn.Write(append([]byte{Version5, byte(len(methods))}, methods...))
+	_, err := proxyConn.Write(append([]byte{Version5, byte(len(methods))}, methods...))
 	if err != nil {
 		return nil
 	}
-	reply, err := ReadNBytes(clt.ProxyConn, 2)
+	reply, err := ReadNBytes(proxyConn, 2)
 
 	if err != nil {
 		return err
@@ -168,11 +146,11 @@ func (clt *Client) authentication() error {
 		}
 		userPassRequest := append([]byte{0x01, byte(len(user))}, []byte(user)...)
 		userPassRequest = append(userPassRequest, byte(len(pass)))
-		_, err = clt.ProxyConn.Write(append(userPassRequest, []byte(pass)...))
+		_, err = proxyConn.Write(append(userPassRequest, []byte(pass)...))
 		if err != nil {
 			return err
 		}
-		reply, err = ReadNBytes(clt.ProxyConn, 2)
+		reply, err = ReadNBytes(proxyConn, 2)
 		if err != nil {
 			return err
 		}
@@ -186,33 +164,33 @@ func (clt *Client) authentication() error {
 	return nil
 }
 
-func (clt *Client) socks5Request(request *Request) (err error) {
+func (clt *Client) socks5Request(request *Request, proxyConn net.Conn) (err error) {
 	destAddrByte, err := request.Address.Bytes(Version5)
 	if err != nil {
 		return err
 	}
 	b := []byte{request.VER, request.CMD, request.RSV}
-	if _, err := clt.ProxyConn.Write(append(b, destAddrByte...)); err != nil {
+	if _, err := proxyConn.Write(append(b, destAddrByte...)); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (clt *Client) socks4Request(request *Request) (err error) {
+func (clt *Client) socks4Request(request *Request, proxyConn net.Conn) (err error) {
 	destAddrByte, err := request.Address.Bytes(Version4)
 	if err != nil {
 		return err
 	}
 	b := []byte{request.VER, request.CMD}
-	if _, err := clt.ProxyConn.Write(append(b, destAddrByte...)); err != nil {
+	if _, err := proxyConn.Write(append(b, destAddrByte...)); err != nil {
 		return err
 	}
 	return nil
 }
 
 // parseReply parse to reply from io.Reader
-func (clt *Client) parseReply(r io.Reader) (rep Reply, err error) {
-	if clt.VER == Version4 {
+func (clt *Client) parseReply(request *Request, r io.Reader) (rep Reply, err error) {
+	if request.VER == Version4 {
 		// Read the version and command
 		tmp, err := ReadNBytes(r, 2)
 		if err != nil {
@@ -222,7 +200,7 @@ func (clt *Client) parseReply(r io.Reader) (rep Reply, err error) {
 		if rep.VER != Version4 {
 			return rep, fmt.Errorf("unrecognized SOCKS version[%d]", rep.VER)
 		}
-	} else if clt.VER == Version5 {
+	} else if request.VER == Version5 {
 		// Read the version and command
 		tmp, err := ReadNBytes(r, 3)
 		if err != nil {
@@ -233,10 +211,10 @@ func (clt *Client) parseReply(r io.Reader) (rep Reply, err error) {
 			return rep, fmt.Errorf("unrecognized SOCKS version[%d]", rep.VER)
 		}
 	} else {
-		return rep, &VersionError{clt.VER}
+		return rep, &VersionError{request.VER}
 	}
 	// Read address
-	serverBoundAddr, _, err := readAddress(r, clt.VER)
+	serverBoundAddr, _, err := readAddress(r, request.VER)
 	if err != nil {
 		return rep, fmt.Errorf("failed to get reply address, %v", err)
 	}
@@ -250,13 +228,12 @@ type underConnect struct {
 	remoteAddress net.Addr // real remote address, not the proxy address
 }
 
-func (clt *Client) UDPDial(laddr *net.UDPAddr, raddr string) (net.Conn, error) {
-	proxyConn, err := net.Dial("tcp", clt.ProxyAddr)
+func (clt *Client) DialUDP(request *Request) (net.Conn, error) {
+	proxyTCPConn, err := net.Dial("tcp", clt.ProxyAddr)
 	if err != nil {
 		return nil, err
 	}
-	clt.ProxyConn = proxyConn
-	bndAddress, err := clt.handShake(UDP_ASSOCIATE, raddr)
+	bndAddress, err := clt.handShake(request, proxyTCPConn)
 	if err != nil {
 		return nil, err
 	}
@@ -265,26 +242,24 @@ func (clt *Client) UDPDial(laddr *net.UDPAddr, raddr string) (net.Conn, error) {
 		clt.Close()
 		return nil, err
 	}
-	if laddr == nil {
-		ad := clt.ProxyConn.LocalAddr().(*net.TCPAddr)
-		laddr = &net.UDPAddr{
+	ad := proxyTCPConn.LocalAddr().(*net.TCPAddr)
+		laddr := &net.UDPAddr{
 			IP:   ad.IP,
 			Port: ad.Port,
 			Zone: ad.Zone,
 		}
-	}
-	udpConn, err := net.DialUDP("udp", laddr, ra)
+	proxyUDPConn, err := net.DialUDP("udp", laddr, ra)
 	if err != nil {
 		clt.Close()
 		return nil, err
 	}
-	destAddr, err := NewAddrByteFromString(raddr)
+	destAddr, err := NewAddrByteFromString(request.Address.String())
 	//remoteAddress, err := net.ResolveUDPAddr(network, raddr)
 	if err != nil {
 		return nil, err
 	}
 	return &SocksUDPConn{
-		UDPConn: udpConn,
+		UDPConn: proxyUDPConn,
 		dstAddr: destAddr,
 		timeout: time.Duration(clt.UDPTimout) * time.Second,
 	}, nil
