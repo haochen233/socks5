@@ -3,7 +3,6 @@ package socks5
 import (
 	"bytes"
 	"errors"
-	"net"
 )
 
 // Request The SOCKS request is formed as follows:
@@ -29,10 +28,8 @@ type Request struct {
 type UDPHeader struct {
 	RSV  uint16
 	FRAG uint8
-	ATYPE
-	DestAddr net.IP
-	DestPort uint16
-	Data     []byte
+	*Address
+	Data []byte
 }
 
 var errEmptyPayload = errors.New("empty payload")
