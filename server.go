@@ -457,7 +457,7 @@ func (srv *Server) sendReply(out io.Writer, r *Reply) error {
 		if err != nil {
 			return err
 		}
-		reply = append(reply, r.VER, r.REP)
+		reply = append(reply, 0, r.REP)
 		// Remove NULL at the end. Please see Address.Bytes() Method.
 		reply = append(reply, addr[:len(addr)-1]...)
 	} else if r.VER == Version5 {
