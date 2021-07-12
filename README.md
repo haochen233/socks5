@@ -102,3 +102,65 @@ func main() {
   }
 }
 ```
+
+# Client usage
+### simple:
+```go
+package main
+
+import (
+	"time"
+
+	"github.com/haochen233/socks5"
+)
+
+func main() {
+	var userStorage = socks5.NewPwdStore()
+	userStorage.Set("admin", "123456")
+	// Get a clinet
+	client := socks5.NewSimpleClient("127.0.0.1:1080")
+	// Add username/password authentication
+	client.Auth = map[socks5.METHOD]interface{}{socks5.USERNAME_PASSWORD: userStorage}
+	// Add the client property as follows
+	//client.ErrorLog = log.Logger
+
+	// The address of the remote host to connect to
+	destAddr, err := socks5.ParseAddress("example.com:8010")
+	if err != nil {
+		panic(err)
+	}
+	// one request example,a connection to TCP,CMD is CONNECT
+	request := &socks5.Request{
+		Address: destAddr,
+		CMD:     socks5.CONNECT,
+		VER:     socks5.Version5,
+	}
+	tcpconn := client.DialTCP(request)
+	if tcpconn == nil {
+		panic("TCP conn failure")
+	}
+	// Write to the tcpconn
+	tcpconn.Write([]byte("hello"))
+	time.Sleep(time.Second)
+
+	//another example request, a connection to UDP,CMD is UDP_ASSOCIATE
+	request = &socks5.Request{
+		Address: destAddr,
+		CMD:     socks5.UDP_ASSOCIATE,
+		VER:     socks5.Version5,
+	}
+	udpconn := client.DialUDP(request)
+	if udpconn == nil {
+		panic("UDP conn failure")
+	}
+	payload := []byte("hello")
+	udpData, err := socks5.PackUDPData(destAddr, payload)
+	if err != nil {
+		panic(err)
+	}
+	// Write to the udpconn
+	udpconn.Write(udpData)
+	time.Sleep(time.Second)
+}
+
+```

@@ -1,14 +1,11 @@
 package socks5
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"sync"
-	"time"
 )
 
 // Client defines parameters for running socks client.
@@ -19,15 +16,15 @@ type Client struct {
 	// method mapping to the authenticator
 	Auth map[METHOD]interface{}
 
-	UDPTimout  int
-	TCPTimeout int
-
 	// Generate by Server.Addr field. For Server internal use only.
 	bindAddr *Address
 
 	// ErrorLog specifics an options logger for errors accepting
 	// If nil, logging is done via log package's standard logger.
 	ErrorLog *log.Logger
+
+	UDPTimout  int
+	TCPTimeout int
 }
 
 // MemoryStore store username&password in memory.
@@ -43,6 +40,7 @@ func NewPwdStore() *PwdStore {
 	return &PwdStore{}
 }
 
+// Set store username and password
 func (m *PwdStore) Set(username string, password string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -51,264 +49,273 @@ func (m *PwdStore) Set(username string, password string) error {
 	return nil
 }
 
-// NewClient create a client
-func NewClient(proxyAddr string, opts interface{}) *Client {
-	c := &Client{
+// NewSimpleClient simple create a client
+func NewSimpleClient(proxyAddr string) *Client {
+	return &Client{
 		ProxyAddr: proxyAddr,
 	}
-	if opts != nil {
-		switch value := opts.(type) {
-		case *PwdStore:
-			c.Auth = map[METHOD]interface{}{USERNAME_PASSWORD: value}
-		}
-	}
-	return c
 }
 
-func (clt *Client) Dial(request *Request) (net.Conn, error) {
-	switch request.CMD {
-	case BIND, CONNECT:
-		return clt.DialTCP(request)
-	case UDP_ASSOCIATE:
-		return clt.DialUDP(request)
-	default:
-		return nil, errors.New("net support network")
+// DialTCP when command is CONNECT and BIND,use tcp dail
+// return a TCPConn
+func (clt *Client) DialTCP(request *Request) *net.TCPConn {
+	if request.CMD == UDP_ASSOCIATE {
+		clt.logf()("command should not be udp_associate")
+		return nil
 	}
-}
-
-func (clt *Client) DialTCP(request *Request) (net.Conn, error) {
-	proxyConn, err := net.Dial("tcp", clt.ProxyAddr)
+	conn, err := clt.handShake(request)
 	if err != nil {
-		return nil, err
-	}
-	if _, err := clt.handShake(request, proxyConn); err != nil {
 		clt.logf()(err.Error())
-		proxyConn.Close()
-		return nil, err
+		return nil
 	}
-	return proxyConn, nil
+	if tcpConn, ok := conn.(*net.TCPConn); !ok {
+		conn.Close()
+		clt.logf()("conn should be TCP conn")
+		return nil
+	} else {
+		return tcpConn
+	}
 }
 
 // handShake socks protocol handshake process
-func (clt *Client) handShake(request *Request, proxyConn net.Conn) (string, error) {
+func (clt *Client) handShake(request *Request) (conn net.Conn, err error) {
+	proxyTCPConn, err := net.Dial("tcp", clt.ProxyAddr)
+	if err != nil {
+		return nil, err
+	}
 	if request.VER == Version5 {
-		err := clt.authentication(proxyConn)
-		if err != nil {
-			return "", err
-		}
-		clt.socks5Request(request, proxyConn)
+		conn, err = clt.handShake5(request, proxyTCPConn)
 	} else if request.VER == Version4 {
-		clt.socks4Request(request, proxyConn)
+		conn, err = clt.handShake4(request, proxyTCPConn)
+	}
+	if err != nil {
+		conn.Close()
+		return nil, err
 	}
 
-	reply, err := clt.parseReply(request, proxyConn)
-	if err != nil {
-		return "", err
-	}
-	if reply.REP != SUCCESSED {
-		return "", errors.New("host unreachable")
-	}
-	return reply.Address.String(), nil
+	return conn, nil
 }
 
+// handShake5 Socks 5 version of the connection handshake
+func (clt *Client) handShake5(request *Request, proxyTCPConn net.Conn) (net.Conn, error) {
+	err := clt.authentication(proxyTCPConn)
+	if err != nil {
+		return proxyTCPConn, err
+	}
+	destAddrByte, err := request.Address.Bytes(Version5)
+	if err != nil {
+		return proxyTCPConn, err
+	}
+	// The SOCKS request is formed as follows:
+	//    +----+-----+-------+------+----------+----------+
+	//    |VER | CMD |  RSV  | ATYP | DST.ADDR | DST.PORT |
+	//    +----+-----+-------+------+----------+----------+
+	//    | 1  |  1  | X'00' |  1   | Variable |    2     |
+	//    +----+-----+-------+------+----------+----------+
+	if _, err := proxyTCPConn.Write(append([]byte{request.VER, request.CMD, request.RSV}, destAddrByte...)); err != nil {
+		return proxyTCPConn, err
+	}
+	// reply formed as follows:
+	//    +----+-----+-------+------+----------+----------+
+	//    |VER | REP |  RSV  | ATYP | BND.ADDR | BND.PORT |
+	//    +----+-----+-------+------+----------+----------+
+	//    | 1  |  1  | X'00' |  1   | Variable |    2     |
+	//    +----+-----+-------+------+----------+----------+
+	reply := &Reply{}
+	tmp, err := ReadNBytes(proxyTCPConn, 3)
+	if err != nil {
+		return proxyTCPConn, fmt.Errorf("failed to get reply version and command and reserved, %v", err)
+	}
+	reply.VER, reply.REP, reply.RSV = tmp[0], tmp[1], tmp[2]
+	if reply.VER != Version5 {
+		return proxyTCPConn, fmt.Errorf("unrecognized SOCKS version[%d]", reply.VER)
+	}
+	// read address
+	serverBoundAddr, _, err := readAddress(proxyTCPConn, request.VER)
+	if err != nil {
+		return proxyTCPConn, fmt.Errorf("failed to get reply address, %v", err)
+	}
+	reply.Address = serverBoundAddr
+	if reply.REP != SUCCESSED {
+		return proxyTCPConn, errors.New("host unreachable")
+	}
+	// UDP_ASSOCIATE also need to
+	if request.CMD == UDP_ASSOCIATE {
+		serverBoundUDPAddr, err := net.ResolveUDPAddr("udp", reply.Address.String())
+		if err != nil {
+			return proxyTCPConn, err
+		}
+		// Get local UDP addr
+		localTCPAddr := proxyTCPConn.LocalAddr().(*net.TCPAddr)
+		localUDPAddr := &net.UDPAddr{
+			IP:   localTCPAddr.IP,
+			Port: localTCPAddr.Port,
+			Zone: localTCPAddr.Zone,
+		}
+		// Get UDP Conn
+		proxyUDPConn, err := net.DialUDP("udp", localUDPAddr, serverBoundUDPAddr)
+		if err != nil {
+			return proxyTCPConn, err
+		}
+		// TCP conn are no longer needed,close
+		proxyTCPConn.Close()
+		return proxyUDPConn, nil
+	}
+	return proxyTCPConn, nil
+}
+
+// authentication
 func (clt *Client) authentication(proxyConn net.Conn) error {
 	var methods []byte
 	methods = append(methods, NO_AUTHENTICATION_REQUIRED)
 	if clt.Auth != nil {
 		methods = append(methods, USERNAME_PASSWORD)
 	}
-
+	// The client connects to the server, and sends a version identifier/method selection message:
+	//    +----+----------+----------+
+	//    |VER | NMETHODS | METHODS  |
+	//    +----+----------+----------+
+	//    | 1  |    1     | 1 to 255 |
+	//    +----+----------+----------+
 	_, err := proxyConn.Write(append([]byte{Version5, byte(len(methods))}, methods...))
 	if err != nil {
 		return nil
 	}
+	//Get reply, a METHOD selection message:
+	//    +----+--------+
+	//    |VER | METHOD |
+	//    +----+--------+
+	//    | 1  |   1    |
+	//    +----+--------+
 	reply, err := ReadNBytes(proxyConn, 2)
-
 	if err != nil {
 		return err
 	}
 	if reply[0] != Version5 {
 		return &VersionError{reply[0]}
 	}
-
+	// Currently only USERNAME_PASSWORD and NO_AUTHENTICATION_REQUIRED authentication modes are supported
 	if (reply[1] != USERNAME_PASSWORD) && (reply[1] != NO_AUTHENTICATION_REQUIRED) {
 		return &MethodError{reply[1]}
 	}
+	// USERNAME_PASSWORD authentication modes
 	if reply[1] == USERNAME_PASSWORD {
-		var user, pass string
-		switch value := clt.Auth[USERNAME_PASSWORD].(type) {
-		case *PwdStore:
-			user = value.User
-			pass = value.Password
-		}
-		userPassRequest := append([]byte{0x01, byte(len(user))}, []byte(user)...)
-		userPassRequest = append(userPassRequest, byte(len(pass)))
-		_, err = proxyConn.Write(append(userPassRequest, []byte(pass)...))
+		err = clt.userPassAuthentication(proxyConn)
 		if err != nil {
 			return err
 		}
-		reply, err = ReadNBytes(proxyConn, 2)
-		if err != nil {
-			return err
-		}
-		if reply[0] != 0x01 {
-			return errors.New("not support method")
-		}
-		if reply[1] != SUCCESSED {
-			return fmt.Errorf("user authentication failed")
-		}
 	}
 	return nil
 }
 
-func (clt *Client) socks5Request(request *Request, proxyConn net.Conn) (err error) {
-	destAddrByte, err := request.Address.Bytes(Version5)
+//userPassAuthentication Username/Password Authentication for SOCKS V5
+func (clt *Client) userPassAuthentication(proxyConn net.Conn) (err error) {
+	var user, pass string
+	switch value := clt.Auth[USERNAME_PASSWORD].(type) {
+	case *PwdStore:
+		user = value.User
+		pass = value.Password
+	}
+	//This begins with the client producing a Username/Password request:
+	//    +----+------+----------+------+----------+
+	//    |VER | ULEN |  UNAME   | PLEN |  PASSWD  |
+	//    +----+------+----------+------+----------+
+	//    | 1  |  1   | 1 to 255 |  1   | 1 to 255 |
+	//    +----+------+----------+------+----------+
+	_, err = proxyConn.Write(append(append(append([]byte{0x01, byte(len(user))}, []byte(user)...), byte(len(pass))), []byte(pass)...))
 	if err != nil {
 		return err
 	}
-	b := []byte{request.VER, request.CMD, request.RSV}
-	if _, err := proxyConn.Write(append(b, destAddrByte...)); err != nil {
-		return err
-	}
-	return nil
-}
+	//Get reply, the following response:
 
-func (clt *Client) socks4Request(request *Request, proxyConn net.Conn) (err error) {
-	destAddrByte, err := request.Address.Bytes(Version4)
+	//    +----+--------+
+	//    |VER | STATUS |
+	//    +----+--------+
+	//    | 1  |   1    |
+	//    +----+--------+
+	tmp, err := ReadNBytes(proxyConn, 2)
 	if err != nil {
 		return err
 	}
-	b := []byte{request.VER, request.CMD}
-	if _, err := proxyConn.Write(append(b, destAddrByte...)); err != nil {
-		return err
+	if tmp[0] != 0x01 {
+		return errors.New("not support method")
 	}
-	return nil
+	if tmp[1] != SUCCESSED {
+		return errors.New("user authentication failed")
+	}
+	return
 }
 
-// parseReply parse to reply from io.Reader
-func (clt *Client) parseReply(request *Request, r io.Reader) (rep Reply, err error) {
-	if request.VER == Version4 {
-		// Read the version and command
-		tmp, err := ReadNBytes(r, 2)
+// handShake4 Socks 4 version of the connection handshake
+func (clt *Client) handShake4(request *Request, proxyConn net.Conn) (net.Conn, error) {
+	switch request.CMD {
+	case CONNECT:
+		destAddrByte, err := request.Address.Bytes(Version4)
 		if err != nil {
-			return rep, fmt.Errorf("failed to get reply version and command, %v", err)
+			return proxyConn, err
 		}
-		rep.VER, rep.REP = tmp[0], tmp[1]
-		if rep.VER != Version4 {
-			return rep, fmt.Errorf("unrecognized SOCKS version[%d]", rep.VER)
+		// The client connects to the SOCKS server and sends a CONNECT request when it wants to establish a connection to an application server.
+		// The client includes in the request packet the IP address and the port number of the destination host, and userid, in the following format.
+		//    +----+----+----+----+----+----+----+----+----+----+....+----+
+		//    | VN | CD | DSTPORT |      DSTIP        | USERID       |NULL|
+		//    +----+----+----+----+----+----+----+----+----+----+....+----+
+		//      1    1      2              4           variable       1
+		if _, err := proxyConn.Write(append([]byte{request.VER, request.CMD}, destAddrByte...)); err != nil {
+			return proxyConn, err
 		}
-	} else if request.VER == Version5 {
-		// Read the version and command
-		tmp, err := ReadNBytes(r, 3)
+		// A reply packet is sent to the client when this connection is established,or when the request is rejected or the operation fails.
+		//    +----+----+----+----+----+----+----+----+
+		//    | VN | CD | DSTPORT |      DSTIP        |
+		//    +----+----+----+----+----+----+----+----+
+		//       1    1      2              4
+		tmp, err := ReadNBytes(proxyConn, 2)
 		if err != nil {
-			return rep, fmt.Errorf("failed to get reply version and command and reserved, %v", err)
+			return proxyConn, fmt.Errorf("failed to get reply version and command, %v", err)
 		}
-		rep.VER, rep.REP, rep.RSV = tmp[0], tmp[1], tmp[2]
-		if rep.VER != Version5 {
-			return rep, fmt.Errorf("unrecognized SOCKS version[%d]", rep.VER)
+		if tmp[0] != 0 {
+			return proxyConn, fmt.Errorf("response VN wrong[%d]", tmp[0])
 		}
+		if tmp[1] != Granted {
+			return proxyConn, errors.New("host unreachable")
+		}
+		// Read address
+		_, _, err = readAddress(proxyConn, request.VER)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get reply address, %v", err)
+		}
+		return proxyConn, nil
+	case BIND:
+		return proxyConn, fmt.Errorf("temporarily does not support the cmmand bind")
+	default:
+		return proxyConn, fmt.Errorf("does not support the cmmand %s", cmd2Str[request.CMD])
+	}
+}
+
+// DialUDP when command is UDP_ASSOCIATE,use UDP dail
+// return a UDPConn
+func (clt *Client) DialUDP(request *Request) *net.UDPConn {
+	if request.CMD != UDP_ASSOCIATE {
+		clt.logf()("command should be udp_associate")
+		return nil
+	}
+	conn, err := clt.handShake(request)
+	if err != nil {
+		clt.logf()(err.Error())
+		return nil
+	}
+	if udpConn, ok := conn.(*net.UDPConn); !ok {
+		conn.Close()
+		clt.logf()("conn should be TCP conn")
+		return nil
 	} else {
-		return rep, &VersionError{request.VER}
+		return udpConn
 	}
-	// Read address
-	serverBoundAddr, _, err := readAddress(r, request.VER)
-	if err != nil {
-		return rep, fmt.Errorf("failed to get reply address, %v", err)
-	}
-	rep.Address = serverBoundAddr
-	return rep, nil
 }
 
-func (clt *Client) DialUDP(request *Request) (net.Conn, error) {
-	proxyTCPConn, err := net.Dial("tcp", clt.ProxyAddr)
-	if err != nil {
-		return nil, err
-	}
-	bndAddress, err := clt.handShake(request, proxyTCPConn)
-	if err != nil {
-		return nil, err
-	}
-	ra, err := net.ResolveUDPAddr("udp", bndAddress)
-	if err != nil {
-		clt.logf()(err.Error())
-		proxyTCPConn.Close()
-		return nil, err
-	}
-	ad := proxyTCPConn.LocalAddr().(*net.TCPAddr)
-	laddr := &net.UDPAddr{
-		IP:   ad.IP,
-		Port: ad.Port,
-		Zone: ad.Zone,
-	}
-	proxyUDPConn, err := net.DialUDP("udp", laddr, ra)
-	if err != nil {
-		clt.logf()(err.Error())
-		proxyTCPConn.Close()
-		return nil, err
-	}
-	return &SocksUDPConn{
-		UDPConn: proxyUDPConn,
-		dstAddr: request.Address,
-		timeout: time.Duration(clt.UDPTimout) * time.Second,
-	}, nil
-}
-
+// logf Logging is done using the client's errorlog
 func (clt *Client) logf() func(format string, args ...interface{}) {
 	if clt.ErrorLog == nil {
 		return log.Printf
 	}
 	return clt.ErrorLog.Printf
-}
-
-type SocksUDPConn struct {
-	*net.UDPConn
-	dstAddr *Address
-	timeout time.Duration
-}
-
-func (p *SocksUDPConn) Read(b []byte) (int, error) {
-	if p.timeout != 0 {
-		p.UDPConn.SetReadDeadline(time.Now().Add(p.timeout))
-	}
-
-	tmp, err := ReadNBytes(p.UDPConn, 3)
-	if err != nil {
-		return 0, err
-	}
-	var udpHeader UDPHeader
-	udpHeader.RSV, udpHeader.FRAG = binary.BigEndian.Uint16(tmp[0:1]), tmp[2]
-	addr, _, err := readAddress(p.UDPConn, Version5)
-	if err != nil {
-		return 0, err
-	}
-	udpHeader.Address = addr
-	data, err := ReadUntilNULL(p.UDPConn)
-	if err != nil {
-		return 0, err
-	}
-	udpHeader.Data = data
-
-	if len(b) < len(udpHeader.Data) {
-		return 0, errors.New("buff too small")
-	}
-	n := copy(b, udpHeader.Data)
-	return n, nil
-}
-
-func (p *SocksUDPConn) Write(b []byte) (int, error) {
-	d := []byte{0, 0, 0}
-	addrByets, err := p.dstAddr.Bytes(Version5)
-	if err != nil {
-		return 0, err
-	}
-	payload := append(append(d, addrByets...), b...)
-	n, err := p.UDPConn.Write(payload)
-
-	if err != nil {
-		return 0, err
-	}
-	if len(payload) != n {
-		return 0, errors.New("not write full")
-	}
-	return len(b), nil
 }
