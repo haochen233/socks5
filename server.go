@@ -249,8 +249,9 @@ func (srv *Server) IsAllowNoAuthRequired() bool {
 }
 
 // establish tcp connection to remote host if command is CONNECT or
-// start listen on udp socket when command is UDP_ASSOCIATE.
-// Finally, send corresponding reply to client.
+// start listen on udp socket when command is UDP_ASSOCIATE. Listen
+// and accept host connection when command is BIND. Finally, send
+// corresponding reply to client.
 func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err error) {
 	reply := &Reply{
 		VER:     req.VER,
