@@ -76,6 +76,7 @@ func (clt *Client) TCPConnect(request *Request) (conn net.Conn, replyAddr *Addre
 		if err != nil {
 			clt.logf()(err.Error())
 		}
+		defer proxyTCPConn.SetDeadline(time.Time{})
 	}
 	if request.VER == Version5 {
 		replyAddr, err = clt.handShake5(request, proxyTCPConn)
@@ -135,7 +136,7 @@ func (clt *Client) handShake5(request *Request, proxyTCPConn net.Conn) (*Address
 	}
 	reply.Address = serverBoundAddr
 	if reply.REP != SUCCESSED {
-		return nil, errors.New("server refuse client request")
+		return nil, fmt.Errorf("server refuse client request, %s", rep2Str[reply.REP])
 	}
 	return reply.Address, nil
 }
@@ -291,12 +292,6 @@ func (clt *Client) UDPForward(request *Request) *net.UDPConn {
 		clt.logf()(err.Error())
 		return nil
 	}
-	if clt.TimeOut != 0 {
-		err = proxyUDPConn.SetDeadline(time.Now().Add(clt.TimeOut))
-		if err != nil {
-			clt.logf()(err.Error())
-		}
-	}
 	return proxyUDPConn
 }
 
@@ -317,6 +312,7 @@ func (clt *Client) Bind(ver VER, destAddr *Address) (*Address, <-chan error, net
 		if err != nil {
 			clt.logf()(err.Error())
 		}
+		defer proxyBindConn.SetDeadline(time.Time{})
 	}
 	switch request.VER {
 	case Version4:
@@ -344,6 +340,10 @@ func (clt *Client) Bind(ver VER, destAddr *Address) (*Address, <-chan error, net
 
 // bind5 socks5 bind
 func (clt *Client) bind5(request *Request, proxyBindConn net.Conn) (*Address, <-chan error, net.Conn, error) {
+	err := clt.authentication(proxyBindConn)
+	if err != nil {
+		return nil, nil, proxyBindConn, err
+	}
 	destAddrByte, err := request.Address.Bytes(Version5)
 	if err != nil {
 		return nil, nil, proxyBindConn, err
@@ -379,7 +379,7 @@ func (clt *Client) bind5(request *Request, proxyBindConn net.Conn) (*Address, <-
 	}
 	reply.Address = serverBoundAddr
 	if reply.REP != SUCCESSED {
-		return nil, nil, proxyBindConn, errors.New("server refuse client request,when first time reply")
+		return nil, nil, proxyBindConn, fmt.Errorf("server refuse client request, %s,when first time reply", rep2Str[reply.REP])
 	}
 	errorChan := make(chan error)
 	go func() {
