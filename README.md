@@ -121,6 +121,8 @@ func main() {
 	client := socks5.NewSimpleClient("127.0.0.1:1080")
 	// Add username/password authentication
 	client.Auth = map[socks5.METHOD]interface{}{socks5.USERNAME_PASSWORD: userStorage}
+	// The default read-write timeout is 15 minutes
+	client.TimeOut = 15 * time.Minute
 	// Add the client property as follows
 	//client.ErrorLog = log.Logger
 
@@ -130,12 +132,12 @@ func main() {
 		panic(err)
 	}
 	// one request example,a connection to TCP,CMD is CONNECT
-	request := &socks5.Request{
+	request := &Request{
 		Address: destAddr,
 		CMD:     socks5.CONNECT,
 		VER:     socks5.Version5,
 	}
-	tcpconn := client.DialTCP(request)
+	tcpconn, _ := client.TCPConnect(request)
 	if tcpconn == nil {
 		panic("TCP conn failure")
 	}
@@ -143,18 +145,59 @@ func main() {
 	tcpconn.Write([]byte("hello"))
 	time.Sleep(time.Second)
 
-	//another example request, a connection to UDP,CMD is UDP_ASSOCIATE
-	request = &socks5.Request{
+	// one request example,a connection to TCP,CMD is BIND
+	request = &Request{
 		Address: destAddr,
+		CMD:     socks5.CONNECT,
+		VER:     socks5.Version5,
+	}
+	tcpconn, _ = client.TCPConnect(request)
+	if tcpconn == nil {
+		panic("TCP conn failure")
+	}
+	serverBoundAddr, secondAcceptance, proxyBindConn := client.Bind(socks5.Version5, destAddr)
+	if proxyBindConn == nil {
+		panic("TCP conn failure")
+	}
+
+	// FTP client sends the serverBoundAddr address information to the FTP serve via tcpconn
+	serverBoundAddrByte, err := serverBoundAddr.Bytes(socks5.Version5)
+	if err != nil {
+		panic(err)
+	}
+	// ftp data
+	var ftpdataByte []byte
+	ftpFormatByte := append(ftpdataByte, serverBoundAddrByte...)
+	tcpconn.Write(ftpFormatByte)
+	// Wait for secondAcceptance channel to receive a second return message
+	for data := range secondAcceptance {
+		if data != nil {
+			panic(data)
+		} else {
+			break
+		}
+	}
+	// Write to the bind conn
+	proxyBindConn.Write([]byte("hello"))
+	time.Sleep(time.Second)
+
+	//another example request, a connection to UDP,CMD is UDP_ASSOCIATE
+	// The address of the localhost to send udp
+	localSendUDPAddr, err := socks5.ParseAddress("192.168.1.2:8013")
+	if err != nil {
+		panic(err)
+	}
+	request = &Request{
+		Address: localSendUDPAddr,
 		CMD:     socks5.UDP_ASSOCIATE,
 		VER:     socks5.Version5,
 	}
-	udpconn := client.DialUDP(request)
+	udpconn := client.UDPForward(request)
 	if udpconn == nil {
 		panic("UDP conn failure")
 	}
 	payload := []byte("hello")
-	udpData, err := socks5.PackUDPData(destAddr, payload)
+	udpData, err := PackUDPData(destAddr, payload)
 	if err != nil {
 		panic(err)
 	}
