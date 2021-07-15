@@ -107,16 +107,18 @@ const (
 )
 
 var rep2Str = map[REP]string{
-	SUCCESSED:                       "SUCCESSED",
-	GENERAL_SOCKS_SERVER_FAILURE:    "GENERAL_SOCKS_SERVER_FAILURE",
-	CONNECTION_NOT_ALLOW_BY_RULESET: "CONNECTION_NOT_ALLOW_BY_RULESET",
-	NETWORK_UNREACHABLE:             "NETWORK_UNREACHABLE",
-	HOST_UNREACHABLE:                "HOST_UNREACHABLE",
-	CONNECTION_REFUSED:              "CONNECTION_REFUSED",
-	TTL_EXPIRED:                     "TTL_EXPIRED",
-	COMMAND_NOT_SUPPORTED:           "COMMAND_NOT_SUPPORTED",
-	ADDRESS_TYPE_NOT_SUPPORTED:      "ADDRESS_TYPE_NOT_SUPPORTED",
-	UNASSIGNED:                      "UNASSIGNED",
+	SUCCESSED:                       "successes",
+	GENERAL_SOCKS_SERVER_FAILURE:    "general_socks_server_failure",
+	CONNECTION_NOT_ALLOW_BY_RULESET: "connection_not_allow_by_ruleset",
+	NETWORK_UNREACHABLE:             "network_unreachable",
+	HOST_UNREACHABLE:                "host_unreachable",
+	CONNECTION_REFUSED:              "connection_refused",
+	TTL_EXPIRED:                     "ttl_expired",
+	COMMAND_NOT_SUPPORTED:           "command_not_supported",
+	ADDRESS_TYPE_NOT_SUPPORTED:      "address_type_not_supported",
+	UNASSIGNED:                      "unassigned",
+	Granted:                         "granted",
+	Rejected:                        "rejected",
 }
 
 //socks4 reply
