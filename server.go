@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -50,6 +51,58 @@ type Server struct {
 
 	// Generate by Server.Addr field. For Server internal use only.
 	bindAddr *Address
+
+	isShutdown bool
+
+	mu         sync.Mutex
+	listeners  map[*net.Listener]struct{}
+	activeConn map[*net.Conn]struct{}
+	doneCh     chan struct{}
+}
+
+func (srv *Server) Close() error {
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	// close all listeners
+	err := srv.closeListenerLocked()
+	if err != nil {
+		return err
+	}
+
+	// todo close active conn
+	return nil
+}
+
+func (srv *Server) Shutdown() error {
+	// todo first close all listeners.
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	// todo second
+	return nil
+}
+
+func (srv *Server) closeListenerLocked() error {
+	var err error
+	for ln := range srv.listeners {
+		if cerr := (*ln).Close(); cerr != nil {
+			err = cerr
+		}
+	}
+	return err
+}
+
+func (srv *Server) trackListener(l *net.Listener, add bool) {
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if srv.listeners == nil {
+		srv.listeners = make(map[*net.Listener]struct{})
+	}
+
+	if add {
+		srv.listeners[l] = struct{}{}
+	} else {
+		delete(srv.listeners, l)
+	}
 }
 
 // ListenAndServe listens on the TCP network address srv.Addr and then
@@ -75,18 +128,21 @@ func (srv *Server) ListenAndServe() error {
 	if err != nil {
 		return err
 	}
-	return srv.serve(ln)
+	return srv.Serve(ln)
 }
 
-// serve accepts incoming connections on the Listener l, creating a
+// Serve accepts incoming connections on the Listener l, creating a
 // new service goroutine for each. The service goroutine select client
 // list methods and reply client. Then process authentication and reply
 // to them. At then end of handshake, read socks request from client and
 // establish a connection to the target.
-func (srv *Server) serve(l net.Listener) error {
+func (srv *Server) Serve(l net.Listener) error {
+	srv.trackListener(&l, true)
+	defer srv.trackListener(&l, false)
 	for {
 		client, err := l.Accept()
 		if err != nil {
+			select {}
 			return err
 		}
 		go srv.serveconn(client)
@@ -127,7 +183,7 @@ func (srv *Server) serveconn(client net.Conn) {
 		srv.transport().TransportTCP(client, remote)
 	case UDP_ASSOCIATE:
 		udpServer := remote.(*net.UDPConn)
-		srv.transport().TransportUDP(udpServer)
+		srv.transport().TransportUDP(udpServer, request)
 	case BIND:
 		srv.logf()("not support bind command")
 	}

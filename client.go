@@ -490,3 +490,8 @@ func (clt *Client) logf() func(format string, args ...interface{}) {
 	}
 	return clt.ErrorLog.Printf
 }
+
+type UDPRelay struct {
+	net.UDPConn
+	net.TCPConn
+}
