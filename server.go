@@ -180,10 +180,15 @@ func (srv *Server) serveconn(client net.Conn) {
 	// transport data
 	switch request.CMD {
 	case CONNECT:
-		srv.transport().TransportTCP(client, remote)
+		err := srv.transport().TransportTCP(NewTCPConn(client.(*net.TCPConn)), NewTCPConn(remote.(*net.TCPConn)))
+		if err != nil {
+			srv.logf()(err.Error())
+		}
 	case UDP_ASSOCIATE:
-		udpServer := remote.(*net.UDPConn)
-		srv.transport().TransportUDP(udpServer, request)
+		err = srv.transport().TransportUDP(NewUDPConn(remote.(*net.UDPConn), client.(*net.TCPConn)), request)
+		if err != nil {
+			srv.logf()(err.Error())
+		}
 	case BIND:
 		srv.logf()("not support bind command")
 	}
