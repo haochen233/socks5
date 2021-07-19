@@ -1,12 +1,15 @@
 package socks5
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -52,33 +55,114 @@ type Server struct {
 	// Generate by Server.Addr field. For Server internal use only.
 	bindAddr *Address
 
-	isShutdown bool
+	// 1 indicate server is shutting down.
+	// 0 indicate server is running.
+	// Atomic operation must be guaranteed.
+	isShutdown int32
 
 	mu         sync.Mutex
 	listeners  map[*net.Listener]struct{}
-	activeConn map[*net.Conn]struct{}
+	activeConn map[Conn]struct{}
 	doneCh     chan struct{}
 }
 
-func (srv *Server) Close() error {
+func (srv *Server) getDoneChan() <-chan struct{} {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	// close all listeners
+	return srv.getDoneChanLocked()
+}
+
+func (srv *Server) getDoneChanLocked() chan struct{} {
+	if srv.doneCh == nil {
+		srv.doneCh = make(chan struct{})
+	}
+	return srv.doneCh
+}
+
+func (srv *Server) closeDoneChanLocked() {
+	ch := srv.getDoneChanLocked()
+	select {
+	case <-ch:
+	default:
+		close(srv.doneCh)
+	}
+}
+
+func (srv *Server) Close() error {
+	atomic.StoreInt32(&srv.isShutdown, 1)
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	// close all listeners.
+	err := srv.closeListenerLocked()
+	if err != nil {
+		return err
+	}
+	// close doneCh to broadcast close message.
+	srv.closeDoneChanLocked()
+	// Close all open connections.
+	for conn, _ := range srv.activeConn {
+		if conn.GetState() != StateClosed {
+			conn.Close()
+		}
+	}
+	return nil
+}
+
+func (srv *Server) Shutdown(ctx context.Context) error {
+	atomic.StoreInt32(&srv.isShutdown, 1)
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	// close all listeners.
 	err := srv.closeListenerLocked()
 	if err != nil {
 		return err
 	}
 
-	// todo close active conn
-	return nil
+	pollIntervalBase := time.Millisecond
+	shutdownPollIntervalMax := 500 * time.Millisecond
+	nextPollInterval := func() time.Duration {
+		// Add 10% jitter.
+		interval := pollIntervalBase + time.Duration(rand.Intn(int(pollIntervalBase/10)))
+		// Double and clamp for next time.
+		pollIntervalBase *= 2
+		if pollIntervalBase > shutdownPollIntervalMax {
+			pollIntervalBase = shutdownPollIntervalMax
+		}
+		return interval
+	}
+
+	timer := time.NewTimer(pollIntervalBase)
+	defer timer.Stop()
+	for {
+		if srv.closeIdleConns() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			timer.Reset(nextPollInterval())
+		}
+	}
 }
 
-func (srv *Server) Shutdown() error {
-	// todo first close all listeners.
+func (srv *Server) inShuttingDown() bool {
+	return atomic.LoadInt32(&srv.isShutdown) != 0
+}
+
+func (srv *Server) closeIdleConns() bool {
+	quiescent := true
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	// todo second
-	return nil
+	for conn := range srv.activeConn {
+		if conn.GetState() == StateIdle || conn.GetState() == StateNew {
+			conn.Close()
+			delete(srv.activeConn, conn)
+		} else if conn.GetState() == StateActive {
+			quiescent = false
+		}
+	}
+	return quiescent
 }
 
 func (srv *Server) closeListenerLocked() error {
@@ -91,7 +175,17 @@ func (srv *Server) closeListenerLocked() error {
 	return err
 }
 
-func (srv *Server) trackListener(l *net.Listener, add bool) {
+// trackListener adds or removes a net.Listener to the set of tracked
+// listeners.
+//
+// We store a pointer to interface in the map set, in case the
+// net.Listener is not comparable. This is safe because we only call
+// trackListener via Serve and can track+defer untrack the same
+// pointer to local variable there. We never need to compare a
+// Listener from another caller.
+//
+// It reports whether the server is still up (not Shutdown or Closed).
+func (srv *Server) trackListener(l *net.Listener, add bool) bool {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 	if srv.listeners == nil {
@@ -99,9 +193,26 @@ func (srv *Server) trackListener(l *net.Listener, add bool) {
 	}
 
 	if add {
+		if srv.inShuttingDown() {
+			return false
+		}
 		srv.listeners[l] = struct{}{}
 	} else {
 		delete(srv.listeners, l)
+	}
+	return true
+}
+
+func (srv *Server) trackConn(c Conn, add bool) {
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if srv.activeConn == nil {
+		srv.activeConn = make(map[Conn]struct{})
+	}
+	if add {
+		srv.activeConn[c] = struct{}{}
+	} else {
+		delete(srv.activeConn, c)
 	}
 }
 
@@ -110,6 +221,9 @@ func (srv *Server) trackListener(l *net.Listener, add bool) {
 //
 // If srv.Addr is blank, ":1080" is used.
 func (srv *Server) ListenAndServe() error {
+	if srv.inShuttingDown() {
+		return ErrServerClosed
+	}
 	if srv.bindAddr == nil {
 		srv.bindAddr = new(Address)
 	}
@@ -131,6 +245,9 @@ func (srv *Server) ListenAndServe() error {
 	return srv.Serve(ln)
 }
 
+// ErrServerClosed is returned by the Server's Serve, ListenAndServe methods after a call to Shutdown or Close.
+var ErrServerClosed = errors.New("socks: Server closed")
+
 // Serve accepts incoming connections on the Listener l, creating a
 // new service goroutine for each. The service goroutine select client
 // list methods and reply client. Then process authentication and reply
@@ -139,10 +256,30 @@ func (srv *Server) ListenAndServe() error {
 func (srv *Server) Serve(l net.Listener) error {
 	srv.trackListener(&l, true)
 	defer srv.trackListener(&l, false)
+
+	var tempDelay time.Duration
+
 	for {
 		client, err := l.Accept()
 		if err != nil {
-			select {}
+			select {
+			case <-srv.getDoneChan():
+				return ErrServerClosed
+			default:
+			}
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				if tempDelay == 0 {
+					tempDelay = 5 * time.Millisecond
+				} else {
+					tempDelay *= 2
+				}
+				if max := time.Second; tempDelay > max {
+					tempDelay = max
+				}
+				srv.logf()("socks: Accept error: %v, retrying in %v", err, tempDelay)
+				time.Sleep(tempDelay)
+				continue
+			}
 			return err
 		}
 		go srv.serveconn(client)
@@ -180,12 +317,21 @@ func (srv *Server) serveconn(client net.Conn) {
 	// transport data
 	switch request.CMD {
 	case CONNECT:
-		err := srv.transport().TransportTCP(NewTCPConn(client.(*net.TCPConn)), NewTCPConn(remote.(*net.TCPConn)))
+		clnt := NewTCPConn(client.(*net.TCPConn))
+		dest := NewTCPConn(remote.(*net.TCPConn))
+		srv.activeConn[clnt] = struct{}{}
+		srv.activeConn[dest] = struct{}{}
+
+		err := srv.transport().TransportTCP(clnt, dest)
 		if err != nil {
 			srv.logf()(err.Error())
 		}
 	case UDP_ASSOCIATE:
-		err = srv.transport().TransportUDP(NewUDPConn(remote.(*net.UDPConn), client.(*net.TCPConn)), request)
+		relay := NewUDPConn(remote.(*net.UDPConn), client.(*net.TCPConn))
+		srv.trackConn(relay, true)
+		defer srv.trackConn(relay, false)
+
+		err = srv.transport().TransportUDP(relay, request)
 		if err != nil {
 			srv.logf()(err.Error())
 		}
@@ -347,9 +493,9 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 			dest, err = net.Dial("tcp", req.Address.String())
 			if err != nil {
 				reply.REP = Rejected
-				err = srv.sendReply(client, reply)
+				err2 := srv.sendReply(client, reply)
 				if err != nil {
-					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err}
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err2}
 				}
 				return nil, err
 			}
@@ -358,9 +504,9 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 			remoteAddr, err := ParseAddress(dest.RemoteAddr().String())
 			if err != nil {
 				reply.REP = Rejected
-				err = srv.sendReply(client, reply)
-				if err != nil {
-					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err}
+				err2 := srv.sendReply(client, reply)
+				if err2 != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err2}
 				}
 				return nil, err
 			}
@@ -382,9 +528,9 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 			bindServer, err := net.ListenTCP("tcp", bindAddr)
 			if err != nil {
 				reply.REP = Rejected
-				err = srv.sendReply(client, reply)
-				if err != nil {
-					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err}
+				err2 := srv.sendReply(client, reply)
+				if err2 != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err2}
 				}
 				return nil, err
 			}
@@ -404,18 +550,18 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 			dest, err = bindServer.Accept()
 			if err != nil {
 				reply.REP = Rejected
-				err = srv.sendReply(client, reply)
-				if err != nil {
-					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err}
+				err2 := srv.sendReply(client, reply)
+				if err2 != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err2}
 				}
 				return nil, err
 			}
 
 			// send second reply to client.
 			if req.Address.String() == dest.RemoteAddr().String() {
-				err = srv.sendReply(client, reply)
-				if err != nil {
-					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err}
+				err2 := srv.sendReply(client, reply)
+				if err2 != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err2}
 				}
 			} else {
 				reply.REP = Rejected
@@ -439,8 +585,11 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 			dest, err = net.Dial("tcp", req.Address.String())
 			if err != nil {
 				reply.REP = HOST_UNREACHABLE
-				err = srv.sendReply(client, reply)
-				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err}
+				err2 := srv.sendReply(client, reply)
+				if err2 != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err2}
+
+				}
 				return nil, err
 			}
 
@@ -448,9 +597,9 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 			remoteAddr, err := ParseAddress(dest.RemoteAddr().String())
 			if err != nil {
 				reply.REP = GENERAL_SOCKS_SERVER_FAILURE
-				err = srv.sendReply(client, reply)
-				if err != nil {
-					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err}
+				err2 := srv.sendReply(client, reply)
+				if err2 != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err2}
 				}
 				return nil, err
 			}
@@ -472,9 +621,9 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 			dest, err = net.ListenUDP("udp", addr)
 			if err != nil {
 				reply.REP = GENERAL_SOCKS_SERVER_FAILURE
-				err = srv.sendReply(client, reply)
-				if err != nil {
-					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err}
+				err2 := srv.sendReply(client, reply)
+				if err2 != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err2}
 				}
 				return nil, err
 			}
@@ -498,9 +647,9 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 			bindServer, err := net.ListenTCP("tcp", bindAddr)
 			if err != nil {
 				reply.REP = GENERAL_SOCKS_SERVER_FAILURE
-				err = srv.sendReply(client, reply)
-				if err != nil {
-					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err}
+				err2 := srv.sendReply(client, reply)
+				if err2 != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err2}
 				}
 				return nil, err
 			}
@@ -519,9 +668,9 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 			dest, err = bindServer.Accept()
 			if err != nil {
 				reply.REP = GENERAL_SOCKS_SERVER_FAILURE
-				err = srv.sendReply(client, reply)
-				if err != nil {
-					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err}
+				err2 := srv.sendReply(client, reply)
+				if err2 != nil {
+					return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err2}
 				}
 				return nil, err
 			}

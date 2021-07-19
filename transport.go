@@ -1,6 +1,7 @@
 package socks5
 
 import (
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -36,36 +37,40 @@ func (t *transport) TransportTCP(client *TCPConn, remote *TCPConn) error {
 	errCh := make(chan error, 2)
 
 	f := func(dst *TCPConn, src *TCPConn) {
-		ticker := time.NewTicker(t.IdleTimeout)
-		defer ticker.Stop()
+		timer := time.NewTimer(t.IdleTimeout)
+		defer timer.Stop()
 		buf := transportPool.Get().([]byte)
 		defer transportPool.Put(buf)
 
 		for {
 			select {
 			default:
-				n, err := src.rawConn.Read(buf)
+				n, err := src.Read(buf)
 				if err != nil {
-					errCh <- err
+					if err != io.EOF {
+						errCh <- err
+						return
+					}
+					errCh <- nil
 					return
 				}
 				src.SetState(StateActive)
 
-				n, err = dst.rawConn.Write(buf[:n])
+				n, err = dst.Write(buf[:n])
 				if err != nil {
 					errCh <- err
 					return
 				}
 				dst.SetState(StateActive)
-				ticker.Reset(t.IdleTimeout)
-			case <-ticker.C:
+				timer.Reset(t.IdleTimeout)
+			case <-timer.C:
 				dst.SetState(StateIdle)
 				src.SetState(StateIdle)
-				ticker.Reset(t.IdleTimeout)
-			case <-dst.CloseChan():
+				timer.Reset(t.IdleTimeout)
+			case <-dst.CloseCh():
 				errCh <- nil
 				return
-			case <-src.CloseChan():
+			case <-src.CloseCh():
 				errCh <- nil
 				return
 			}
@@ -95,8 +100,8 @@ func (t *transport) TransportUDP(server *UDPConn, request *Request) error {
 	forwardAddr := make(map[*net.UDPAddr]struct{})
 	buf := transportPool.Get().([]byte)
 	defer transportPool.Put(buf)
-	ticker := time.NewTicker(t.IdleTimeout)
-	defer ticker.Stop()
+	timer := time.NewTimer(t.IdleTimeout)
+	defer timer.Stop()
 
 	defer server.Close()
 	for {
@@ -148,11 +153,11 @@ func (t *transport) TransportUDP(server *UDPConn, request *Request) error {
 					return err
 				}
 			}
-			ticker.Reset(t.IdleTimeout)
-		case <-ticker.C:
+			timer.Reset(t.IdleTimeout)
+		case <-timer.C:
 			server.SetState(StateIdle)
-			ticker.Reset(t.IdleTimeout)
-		case <-server.CloseChan():
+			timer.Reset(t.IdleTimeout)
+		case <-server.CloseCh():
 			return nil
 		}
 	}
