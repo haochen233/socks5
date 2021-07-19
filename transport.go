@@ -5,21 +5,15 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"time"
 )
 
 // Transporter transmit data between client and dest server.
 type Transporter interface {
-	TransportTCP(client *TCPConn, remote *TCPConn) error
+	TransportTCP(client *net.TCPConn, remote *net.TCPConn) <-chan error
 	TransportUDP(server *UDPConn, request *Request) error
 }
 
 type transport struct {
-	// IdleTimeout is the maximum duration for reading from socks client.
-	// it's only effective to socks server handshake process.
-	//
-	// If zero, there is no timeout.
-	IdleTimeout time.Duration
 }
 
 const maxLenOfDatagram = 65507
@@ -31,61 +25,30 @@ var transportPool = &sync.Pool{
 }
 
 // TransportTCP use io.CopyBuffer transmit data.
-func (t *transport) TransportTCP(client *TCPConn, remote *TCPConn) error {
-	defer client.Close()
-	defer remote.Close()
-	errCh := make(chan error, 2)
+func (t *transport) TransportTCP(client *net.TCPConn, remote *net.TCPConn) <-chan error {
+	errCh := make(chan error)
+	var wg = sync.WaitGroup{}
 
-	f := func(dst *TCPConn, src *TCPConn) {
-		timer := time.NewTimer(t.IdleTimeout)
-		defer timer.Stop()
+	f := func(dst *net.TCPConn, src *net.TCPConn) {
+		defer wg.Done()
 		buf := transportPool.Get().([]byte)
 		defer transportPool.Put(buf)
-
-		for {
-			select {
-			default:
-				n, err := src.Read(buf)
-				if err != nil {
-					if err != io.EOF {
-						errCh <- err
-						return
-					}
-					errCh <- nil
-					return
-				}
-				src.SetState(StateActive)
-
-				n, err = dst.Write(buf[:n])
-				if err != nil {
-					errCh <- err
-					return
-				}
-				dst.SetState(StateActive)
-				timer.Reset(t.IdleTimeout)
-			case <-timer.C:
-				dst.SetState(StateIdle)
-				src.SetState(StateIdle)
-				timer.Reset(t.IdleTimeout)
-			case <-dst.CloseCh():
-				errCh <- nil
-				return
-			case <-src.CloseCh():
-				errCh <- nil
-				return
-			}
-		}
+		_, err := io.CopyBuffer(dst, src, buf)
+		errCh <- err
 	}
+
+	wg.Add(2)
+	go func() {
+		wg.Wait()
+		defer client.Close()
+		defer remote.Close()
+		close(errCh)
+	}()
+
 	go f(remote, client)
 	go f(client, remote)
 
-	for i := 0; i < 1; i++ {
-		err := <-errCh
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return errCh
 }
 
 // TransportUDP forwarding UDP packet between client and dest.
@@ -100,8 +63,6 @@ func (t *transport) TransportUDP(server *UDPConn, request *Request) error {
 	forwardAddr := make(map[*net.UDPAddr]struct{})
 	buf := transportPool.Get().([]byte)
 	defer transportPool.Put(buf)
-	timer := time.NewTimer(t.IdleTimeout)
-	defer timer.Stop()
 
 	defer server.Close()
 	for {
@@ -112,7 +73,6 @@ func (t *transport) TransportUDP(server *UDPConn, request *Request) error {
 			if err != nil {
 				return err
 			}
-			server.SetState(StateActive)
 
 			// Should unpack data when data from client.
 			if strings.EqualFold(clientAddr.String(), addr.String()) {
@@ -153,16 +113,10 @@ func (t *transport) TransportUDP(server *UDPConn, request *Request) error {
 					return err
 				}
 			}
-			timer.Reset(t.IdleTimeout)
-		case <-timer.C:
-			server.SetState(StateIdle)
-			timer.Reset(t.IdleTimeout)
 		case <-server.CloseCh():
 			return nil
 		}
 	}
 }
 
-var DefaultTransporter Transporter = &transport{
-	IdleTimeout: 30 * time.Second,
-}
+var DefaultTransporter Transporter = &transport{}
