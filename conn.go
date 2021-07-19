@@ -4,45 +4,27 @@ import (
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
+	"time"
 )
 
-type ConnState = int32
-
-const (
-	StateNew = iota
-	StateActive
-	StateIdle
-	StateClosed
-)
-
-// Conn
-type Conn interface {
-	SetState(state ConnState)
-
-	GetState() ConnState
-
-	// Read reads data from the connection.
-	// Read can be made to time out and return an error after a fixed
-	// time limit; see SetDeadline and SetReadDeadline.
-	Read(b []byte) (n int, err error)
-
-	// Write writes data to the connection.
-	// Write can be made to time out and return an error after a fixed
-	// time limit; see SetDeadline and SetWriteDeadline.
-	Write(b []byte) (n int, err error)
-
-	Close()
-}
-
+// UDPConn be associated with TCP connections.
+// The UDP connection will close immediately, When TCP connection closed,
+// UDPConn only use in UDP_ASSOCIATE command.
 type UDPConn struct {
 	mu        sync.Mutex
 	udp       *net.UDPConn
 	tcp       *net.TCPConn
-	state     ConnState
 	closeChan chan struct{}
 }
 
+// NewUDPConn get a *UDPConn through provide a tcp and udp connection.
+// the tcp connection is used for socks UDP_ASSOCIATE handshake.
+// the udp connection is used for socks udp forwarding.
+//
+// After UDP_ASSOCIATE handshake, the tcp transit nothing. Its only
+// function is udp relay connection still running.
+//
+// If one of them shuts off, it will close them all.
 func NewUDPConn(udp *net.UDPConn, tcp *net.TCPConn) *UDPConn {
 	if udp == nil || tcp == nil {
 		return nil
@@ -51,7 +33,6 @@ func NewUDPConn(udp *net.UDPConn, tcp *net.TCPConn) *UDPConn {
 	u := &UDPConn{
 		udp:       udp,
 		tcp:       tcp,
-		state:     StateNew,
 		closeChan: make(chan struct{}),
 	}
 
@@ -64,12 +45,24 @@ func NewUDPConn(udp *net.UDPConn, tcp *net.TCPConn) *UDPConn {
 	return u
 }
 
-func (u *UDPConn) SetState(state ConnState) {
-	atomic.StoreInt32(&u.state, state)
+func (u *UDPConn) LocalAddr() net.Addr {
+	return u.udp.LocalAddr()
 }
 
-func (u *UDPConn) GetState() ConnState {
-	return atomic.LoadInt32(&u.state)
+func (u *UDPConn) RemoteAddr() net.Addr {
+	return u.udp.RemoteAddr()
+}
+
+func (u *UDPConn) SetDeadline(t time.Time) error {
+	return u.udp.SetDeadline(t)
+}
+
+func (u *UDPConn) SetReadDeadline(t time.Time) error {
+	return u.udp.SetReadDeadline(t)
+}
+
+func (u *UDPConn) SetWriteDeadline(t time.Time) error {
+	return u.udp.SetWriteDeadline(t)
 }
 
 func (u *UDPConn) Read(b []byte) (n int, err error) {
@@ -88,20 +81,25 @@ func (u *UDPConn) Write(b []byte) (n int, err error) {
 	return u.udp.Write(b)
 }
 
-func (u *UDPConn) Close() {
+func (u *UDPConn) Close() error {
+	var err error
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
 	ch := u.getCloseChanLocked()
 	select {
 	case <-ch:
-		return
+		return nil
 	default:
-		u.SetState(StateClosed)
-		u.udp.Close()
-		u.tcp.Close()
+		if err2 := u.udp.Close(); err2 != nil {
+			err = err2
+		}
+		if err2 := u.tcp.Close(); err2 != nil {
+			err = err2
+		}
 		close(u.closeChan)
 	}
+	return err
 }
 
 func (u *UDPConn) CloseCh() <-chan struct{} {
@@ -115,72 +113,4 @@ func (u *UDPConn) getCloseChanLocked() <-chan struct{} {
 		u.closeChan = make(chan struct{})
 	}
 	return u.closeChan
-}
-
-type TCPConn struct {
-	mu        sync.Mutex
-	base      *net.TCPConn
-	state     ConnState
-	closeChan chan struct{}
-}
-
-func NewTCPConn(tcp *net.TCPConn) *TCPConn {
-	if tcp == nil {
-		return nil
-	}
-
-	t := &TCPConn{
-		base:      tcp,
-		state:     StateNew,
-		closeChan: make(chan struct{}),
-	}
-
-	return t
-}
-
-func (t *TCPConn) SetState(state ConnState) {
-	atomic.StoreInt32(&t.state, state)
-}
-
-func (t *TCPConn) GetState() ConnState {
-	return atomic.LoadInt32(&t.state)
-}
-
-func (t *TCPConn) Read(b []byte) (n int, err error) {
-	return t.base.Read(b)
-}
-
-func (t *TCPConn) Write(b []byte) (n int, err error) {
-	return t.base.Write(b)
-}
-
-func (t *TCPConn) ReadFrom(r io.Reader) (int64, error) {
-	return t.base.ReadFrom(r)
-}
-
-func (t *TCPConn) Close() {
-	t.mu.Lock()
-	t.mu.Unlock()
-	ch := t.getCloseChanLocked()
-	select {
-	case <-ch:
-		return
-	default:
-		t.SetState(StateClosed)
-		t.base.Close()
-		close(t.closeChan)
-	}
-}
-
-func (t *TCPConn) CloseCh() <-chan struct{} {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.getCloseChanLocked()
-}
-
-func (t *TCPConn) getCloseChanLocked() <-chan struct{} {
-	if t.closeChan == nil {
-		t.closeChan = make(chan struct{})
-	}
-	return t.closeChan
 }

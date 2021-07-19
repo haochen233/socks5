@@ -1,11 +1,9 @@
 package socks5
 
 import (
-	"context"
 	"errors"
 	"io"
 	"log"
-	"math/rand"
 	"net"
 	"strconv"
 	"sync"
@@ -62,7 +60,7 @@ type Server struct {
 
 	mu         sync.Mutex
 	listeners  map[*net.Listener]struct{}
-	activeConn map[Conn]struct{}
+	activeConn map[net.Conn]struct{}
 	doneCh     chan struct{}
 }
 
@@ -101,68 +99,13 @@ func (srv *Server) Close() error {
 	srv.closeDoneChanLocked()
 	// Close all open connections.
 	for conn, _ := range srv.activeConn {
-		if conn.GetState() != StateClosed {
-			conn.Close()
-		}
+		conn.Close()
 	}
 	return nil
 }
 
-func (srv *Server) Shutdown(ctx context.Context) error {
-	atomic.StoreInt32(&srv.isShutdown, 1)
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
-	// close all listeners.
-	err := srv.closeListenerLocked()
-	if err != nil {
-		return err
-	}
-
-	pollIntervalBase := time.Millisecond
-	shutdownPollIntervalMax := 500 * time.Millisecond
-	nextPollInterval := func() time.Duration {
-		// Add 10% jitter.
-		interval := pollIntervalBase + time.Duration(rand.Intn(int(pollIntervalBase/10)))
-		// Double and clamp for next time.
-		pollIntervalBase *= 2
-		if pollIntervalBase > shutdownPollIntervalMax {
-			pollIntervalBase = shutdownPollIntervalMax
-		}
-		return interval
-	}
-
-	timer := time.NewTimer(pollIntervalBase)
-	defer timer.Stop()
-	for {
-		if srv.closeIdleConns() {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-			timer.Reset(nextPollInterval())
-		}
-	}
-}
-
 func (srv *Server) inShuttingDown() bool {
 	return atomic.LoadInt32(&srv.isShutdown) != 0
-}
-
-func (srv *Server) closeIdleConns() bool {
-	quiescent := true
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
-	for conn := range srv.activeConn {
-		if conn.GetState() == StateIdle || conn.GetState() == StateNew {
-			conn.Close()
-			delete(srv.activeConn, conn)
-		} else if conn.GetState() == StateActive {
-			quiescent = false
-		}
-	}
-	return quiescent
 }
 
 func (srv *Server) closeListenerLocked() error {
@@ -203,11 +146,11 @@ func (srv *Server) trackListener(l *net.Listener, add bool) bool {
 	return true
 }
 
-func (srv *Server) trackConn(c Conn, add bool) {
+func (srv *Server) trackConn(c net.Conn, add bool) {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 	if srv.activeConn == nil {
-		srv.activeConn = make(map[Conn]struct{})
+		srv.activeConn = make(map[net.Conn]struct{})
 	}
 	if add {
 		srv.activeConn[c] = struct{}{}
@@ -316,15 +259,17 @@ func (srv *Server) serveconn(client net.Conn) {
 
 	// transport data
 	switch request.CMD {
-	case CONNECT:
-		clnt := NewTCPConn(client.(*net.TCPConn))
-		dest := NewTCPConn(remote.(*net.TCPConn))
-		srv.activeConn[clnt] = struct{}{}
-		srv.activeConn[dest] = struct{}{}
+	case CONNECT, BIND:
+		srv.trackConn(client, true)
+		defer srv.trackConn(client, false)
+		srv.trackConn(remote, true)
+		defer srv.trackConn(remote, false)
 
-		err := srv.transport().TransportTCP(clnt, dest)
-		if err != nil {
-			srv.logf()(err.Error())
+		errCh := srv.transport().TransportTCP(client.(*net.TCPConn), remote.(*net.TCPConn))
+		for err := range errCh {
+			if err != nil {
+				srv.logf()(err.Error())
+			}
 		}
 	case UDP_ASSOCIATE:
 		relay := NewUDPConn(remote.(*net.UDPConn), client.(*net.TCPConn))
@@ -335,8 +280,6 @@ func (srv *Server) serveconn(client net.Conn) {
 		if err != nil {
 			srv.logf()(err.Error())
 		}
-	case BIND:
-		srv.logf()("not support bind command")
 	}
 }
 
