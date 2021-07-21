@@ -18,6 +18,11 @@ type Server struct {
 	// in the form "host:port". If empty, ":1080" (port 1080) is used.
 	Addr string
 
+	// BindIP specific UDP relay server IP and bind listen IP.
+	// It shouldn't be ipv4zero like "0,0,0,0" or ipv6zero like [:]
+	// If empty, localhost used.
+	BindIP string
+
 	// ReadTimeout is the maximum duration for reading from socks client.
 	// it's only effective to socks server handshake process.
 	//
@@ -49,9 +54,6 @@ type Server struct {
 
 	// DisableSocks4, disable socks4 server, default enable socks4 compatible.
 	DisableSocks4 bool
-
-	// Generate by Server.Addr field. For Server internal use only.
-	bindAddr *Address
 
 	// 1 indicate server is shutting down.
 	// 0 indicate server is running.
@@ -167,19 +169,17 @@ func (srv *Server) ListenAndServe() error {
 	if srv.inShuttingDown() {
 		return ErrServerClosed
 	}
-	if srv.bindAddr == nil {
-		srv.bindAddr = new(Address)
-	}
+
 	addr := srv.Addr
 	if addr == "" {
 		addr = "0.0.0.0:1080"
 	}
 
-	address, err := ParseAddress(addr)
-	if err != nil {
-		return err
+	if srv.BindIP == "" {
+		srv.BindIP = "localhost"
+	} else if srv.BindIP == net.IPv4zero.String() || srv.BindIP == net.IPv6zero.String() {
+		return errors.New("socks: server bindIP shouldn't be zero")
 	}
-	srv.bindAddr = address
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -462,7 +462,7 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err}
 			}
 		case BIND:
-			bindAddr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(srv.bindAddr.Addr.String(), "0"))
+			bindAddr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(srv.BindIP, "0"))
 			if err != nil {
 				return nil, err
 			}
@@ -555,7 +555,7 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err}
 			}
 		case UDP_ASSOCIATE:
-			addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(srv.bindAddr.Addr.String(), "0"))
+			addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(srv.BindIP, "0"))
 			if err != nil {
 				return nil, err
 			}
@@ -573,15 +573,17 @@ func (srv *Server) establish(client net.Conn, req *Request) (dest net.Conn, err 
 
 			// success
 			reply.REP = SUCCESSED
-			_, p, err := net.SplitHostPort(dest.LocalAddr().String())
-			port, err := strconv.Atoi(p)
-			reply.Address.Port = uint16(port)
+			relayAddr, err := ParseAddress(dest.LocalAddr().String())
+			if err != nil {
+				return nil, err
+			}
+			reply.Address = relayAddr
 			err = srv.sendReply(client, reply)
 			if err != nil {
 				return nil, &OpError{req.VER, "write", client.RemoteAddr(), "\"process request\"", err}
 			}
 		case BIND:
-			bindAddr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(srv.bindAddr.Addr.String(), "0"))
+			bindAddr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(srv.BindIP, "0"))
 			if err != nil {
 				return nil, err
 			}
