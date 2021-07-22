@@ -3,15 +3,16 @@ package socks5
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
-	"sync"
+	"strconv"
 	"time"
 )
 
 // Client defines parameters for running socks client.
 type Client struct {
-	// in the form "host:port". If empty, ":1080" (port 1080) is used.
+	// ProxyAddr in the form "host:port". It not be empty.
 	ProxyAddr string
 
 	// Timeout specifies a time limit for requests made by this
@@ -25,74 +26,92 @@ type Client struct {
 	TimeOut time.Duration
 
 	// method mapping to the authenticator
-	Auth map[METHOD]interface{}
-
-	// Generate by Server.Addr field. For Server internal use only.
-	bindAddr *Address
+	Auth map[METHOD]Authenticator
 
 	// ErrorLog specifics an options logger for errors accepting
 	// If nil, logging is done via log package's standard logger.
 	ErrorLog *log.Logger
+
+	// DisableSocks4A client disable socks4a client, default enable socks4a extension.
+	DisableSocks4A bool
 }
 
-// MemoryStore store username&password in memory.
-// the password is encrypt with hash method.
-type PwdStore struct {
-	User     string
-	Password string
-	mu       sync.Mutex
+// UserPasswd provide socks5 Client Username/Password Authenticator.
+type UserPasswd struct {
+	username string
+	passwrod string
 }
 
-// NewMemeryStore return a new MemoryStore
-func NewPwdStore() *PwdStore {
-	return &PwdStore{}
-}
+// Authenticate socks5 Client Username/Password Authentication.
+func (c *UserPasswd) Authenticate(in io.Reader, out io.Writer) error {
+	//This begins with the client producing a Username/Password request:
+	//    +----+------+----------+------+----------+
+	//    |VER | ULEN |  UNAME   | PLEN |  PASSWD  |
+	//    +----+------+----------+------+----------+
+	//    | 1  |  1   | 1 to 255 |  1   | 1 to 255 |
+	//    +----+------+----------+------+----------+
+	_, err := out.Write(append(append(append([]byte{0x01, byte(len(c.username))}, []byte(c.username)...), byte(len(c.passwrod))), []byte(c.passwrod)...))
+	if err != nil {
+		return err
+	}
+	//Get reply, the following response:
 
-// Set store username and password
-func (m *PwdStore) Set(username string, password string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.User = username
-	m.Password = password
+	//    +----+--------+
+	//    |VER | STATUS |
+	//    +----+--------+
+	//    | 1  |   1    |
+	//    +----+--------+
+	tmp, err := ReadNBytes(in, 2)
+	if err != nil {
+		return err
+	}
+	if tmp[0] != 0x01 {
+		return errors.New("not support method")
+	}
+	if tmp[1] != SUCCESSED {
+		return errors.New("user authentication failed")
+	}
 	return nil
 }
 
-// NewSimpleClient simple create a client
-func NewSimpleClient(proxyAddr string) *Client {
-	return &Client{
-		ProxyAddr: proxyAddr,
-	}
-}
-
-// TCPConnect socks TCP connect,get a tcp connect and reply addr
-func (clt *Client) TCPConnect(request *Request) (conn net.Conn, replyAddr *Address) {
-	proxyTCPConn, err := net.Dial("tcp", clt.ProxyAddr)
+// handshake socks TCP connect,get a tcp connect and reply addr
+func (clt *Client) handshake(request *Request) (conn *net.TCPConn, replyAddr *Address, err error) {
+	// get Socks server Address
+	proxyTCPAddr, err := net.ResolveTCPAddr("tcp", clt.ProxyAddr)
 	if err != nil {
-		clt.logf()(err.Error())
-		return nil, nil
+		return nil, nil, err
+	}
+
+	// dial to Socks server.
+	proxyTCPConn, err := net.DialTCP("tcp", nil, proxyTCPAddr)
+	if err != nil {
+		return nil, nil, err
 	}
 	if clt.TimeOut != 0 {
 		err = proxyTCPConn.SetDeadline(time.Now().Add(clt.TimeOut))
 		if err != nil {
-			clt.logf()(err.Error())
+			return nil, nil, err
 		}
 		defer proxyTCPConn.SetDeadline(time.Time{})
 	}
+
+	// process handshake by version
 	if request.VER == Version5 {
 		replyAddr, err = clt.handShake5(request, proxyTCPConn)
 	} else if request.VER == Version4 {
-		replyAddr, err = clt.connect4(request, proxyTCPConn)
-	} else {
-		err := fmt.Errorf("Version %d is not supported", request.VER)
-		clt.logf()(err.Error())
-	}
-	if err != nil {
-		proxyTCPConn.Close()
-		clt.logf()(err.Error())
-		return nil, nil
+		if request.ATYPE == DOMAINNAME && clt.DisableSocks4A {
+			return nil, nil, errors.New("socks4a client had been disabled")
+		}
+		replyAddr, err = clt.handshake4(request, proxyTCPConn)
 	}
 
-	return proxyTCPConn, replyAddr
+	// handshake wrong.
+	if err != nil {
+		proxyTCPConn.Close()
+		return nil, nil, err
+	}
+
+	return proxyTCPConn, replyAddr, nil
 }
 
 // handShake5 Socks 5 version of the connection handshake
@@ -144,9 +163,8 @@ func (clt *Client) handShake5(request *Request, proxyTCPConn net.Conn) (*Address
 // authentication
 func (clt *Client) authentication(proxyConn net.Conn) error {
 	var methods []byte
-	methods = append(methods, NO_AUTHENTICATION_REQUIRED)
-	if clt.Auth != nil {
-		methods = append(methods, USERNAME_PASSWORD)
+	for method := range clt.Auth {
+		methods = append(methods, method)
 	}
 	// The client connects to the server, and sends a version identifier/method selection message:
 	//    +----+----------+----------+
@@ -171,60 +189,23 @@ func (clt *Client) authentication(proxyConn net.Conn) error {
 	if reply[0] != Version5 {
 		return &VersionError{reply[0]}
 	}
-	// Currently only USERNAME_PASSWORD and NO_AUTHENTICATION_REQUIRED authentication modes are supported
-	if (reply[1] != USERNAME_PASSWORD) && (reply[1] != NO_AUTHENTICATION_REQUIRED) {
+
+	// Is client has this method?
+	if _, ok := clt.Auth[reply[1]]; !ok {
 		return &MethodError{reply[1]}
 	}
-	// USERNAME_PASSWORD authentication modes
-	if reply[1] == USERNAME_PASSWORD {
-		err = clt.userPassAuthentication(proxyConn)
-		if err != nil {
-			return err
-		}
+
+	// process authentication sub negotiation
+	err = clt.Auth[reply[1]].Authenticate(proxyConn, proxyConn)
+	if err != nil {
+		return err
 	}
+
 	return nil
 }
 
-//userPassAuthentication Username/Password Authentication for SOCKS V5
-func (clt *Client) userPassAuthentication(proxyConn net.Conn) (err error) {
-	var user, pass string
-	switch value := clt.Auth[USERNAME_PASSWORD].(type) {
-	case *PwdStore:
-		user = value.User
-		pass = value.Password
-	}
-	//This begins with the client producing a Username/Password request:
-	//    +----+------+----------+------+----------+
-	//    |VER | ULEN |  UNAME   | PLEN |  PASSWD  |
-	//    +----+------+----------+------+----------+
-	//    | 1  |  1   | 1 to 255 |  1   | 1 to 255 |
-	//    +----+------+----------+------+----------+
-	_, err = proxyConn.Write(append(append(append([]byte{0x01, byte(len(user))}, []byte(user)...), byte(len(pass))), []byte(pass)...))
-	if err != nil {
-		return err
-	}
-	//Get reply, the following response:
-
-	//    +----+--------+
-	//    |VER | STATUS |
-	//    +----+--------+
-	//    | 1  |   1    |
-	//    +----+--------+
-	tmp, err := ReadNBytes(proxyConn, 2)
-	if err != nil {
-		return err
-	}
-	if tmp[0] != 0x01 {
-		return errors.New("not support method")
-	}
-	if tmp[1] != SUCCESSED {
-		return errors.New("user authentication failed")
-	}
-	return
-}
-
 // handShake4 Socks 4 version of the connection handshake
-func (clt *Client) connect4(request *Request, proxyConn net.Conn) (*Address, error) {
+func (clt *Client) handshake4(request *Request, proxyConn net.Conn) (*Address, error) {
 	destAddrByte, err := request.Address.Bytes(Version4)
 	if err != nil {
 		return nil, err
@@ -254,45 +235,106 @@ func (clt *Client) connect4(request *Request, proxyConn net.Conn) (*Address, err
 		return nil, errors.New("server refuse client request")
 	}
 	// Read address
-	replyAddr, _, err := readAddress(proxyConn, request.VER)
+	replyAddr, _, err := readSocks4ReplyAddress(proxyConn, request.VER)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get reply address, %v", err)
 	}
 	return replyAddr, nil
 }
 
-// UDPForward socks UDP forward, get a udp connect
-func (clt *Client) UDPForward(request *Request) *net.UDPConn {
-	if request.CMD != UDP_ASSOCIATE {
-		clt.logf()("command should be udp_associate")
-		return nil
+// Connect send CONNECT Request. Returned a connected proxy connection.
+func (clt *Client) Connect(ver VER, dest string) (*net.TCPConn, error) {
+	if ver != Version4 && ver != Version5 {
+		return nil, &VersionError{ver}
 	}
-	proxyTCPConn, udpserverBoundAddr := clt.TCPConnect(request)
-	if proxyTCPConn == nil {
-		clt.logf()("TCP conn failure")
-		return nil
-	}
-	// TCP conn are no longer needed,close
-	defer proxyTCPConn.Close()
-	serverBoundUDPAddr, err := net.ResolveUDPAddr("udp", udpserverBoundAddr.String())
+
+	destAddr, err := ParseAddress(dest)
 	if err != nil {
-		clt.logf()(err.Error())
-		return nil
+		return nil, err
 	}
+	req := &Request{
+		VER:     ver,
+		CMD:     CONNECT,
+		RSV:     0,
+		Address: destAddr,
+	}
+
+	conn, _, err := clt.handshake(req)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+// UDPForward send UDP_ASSOCIATE Request.
+// The laddr Param specific Client address to send udp datagram.
+// If laddr is empty string, a local address (127.0.0.1:port) is automatically chosen.
+// If port is occupied will return error.
+func (clt *Client) UDPForward(laddr string) (*UDPConn, error) {
+	if laddr == "" {
+		laddr = "127.0.0.1:0"
+	}
+
+	// split laddr to host/port
+	host, portStr, err := net.SplitHostPort(laddr)
+	p, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, err
+	}
+	port := uint16(p)
+
+	// zero port, will automatically chosen.
+	if port == 0 {
+		err, port = GetRandomPort("udp")
+		if err != nil {
+			return nil, errors.New("automatically chosen port fail")
+		}
+		laddr = net.JoinHostPort(host, strconv.Itoa(int(port)))
+	}
+
+	// get addr
+	addr, err := ParseAddress(laddr)
+	if err != nil {
+		return nil, err
+	}
+
+	req := &Request{
+		VER:     Version5,
+		CMD:     UDP_ASSOCIATE,
+		RSV:     0,
+		Address: addr,
+	}
+
+	// Handshake base on TCP connection
+	proxyTCPConn, UDPRelayAddr, err := clt.handshake(req)
+	if err != nil {
+		return nil, err
+	}
+
 	// Get local UDP addr
-	localTCPAddr := proxyTCPConn.LocalAddr().(*net.TCPAddr)
-	localUDPAddr := &net.UDPAddr{
-		IP:   request.Addr,
-		Port: int(request.Port),
-		Zone: localTCPAddr.Zone,
-	}
-	// Get UDP Conn
-	proxyUDPConn, err := net.DialUDP("udp", localUDPAddr, serverBoundUDPAddr)
+	localUDPAddr, err := addr.UDPAddr()
 	if err != nil {
-		clt.logf()(err.Error())
-		return nil
+		return nil, err
 	}
-	return proxyUDPConn
+
+	// Get udp relay server bind addr.
+	serverListenUDPAddr, err := UDPRelayAddr.UDPAddr()
+	if err != nil {
+		return nil, err
+	}
+
+	// Dial UDP relay Server
+	err = IsFreePort("udp", port)
+	if err != nil {
+		proxyTCPConn.Close()
+		return nil, fmt.Errorf("port %d is occupied", port)
+	}
+	proxyUDPConn, err := net.DialUDP("udp", localUDPAddr, serverListenUDPAddr)
+	if err != nil {
+		proxyTCPConn.Close()
+		return nil, err
+	}
+	return NewUDPConn(proxyUDPConn, proxyTCPConn), nil
 }
 
 //Bind socks bind cmd, get socks serve Listening bind addr,second time reply err,bind connect
@@ -489,9 +531,4 @@ func (clt *Client) logf() func(format string, args ...interface{}) {
 		return log.Printf
 	}
 	return clt.ErrorLog.Printf
-}
-
-type UDPRelay struct {
-	net.UDPConn
-	net.TCPConn
 }

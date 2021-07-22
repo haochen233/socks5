@@ -60,7 +60,7 @@ func (t *transport) TransportUDP(server *UDPConn, request *Request) error {
 	}
 
 	// Record dest address, limit access to the association.
-	forwardAddr := make(map[*net.UDPAddr]struct{})
+	forwardAddr := make(map[string]struct{})
 	buf := transportPool.Get().([]byte)
 	defer transportPool.Put(buf)
 
@@ -85,7 +85,7 @@ func (t *transport) TransportUDP(server *UDPConn, request *Request) error {
 				if err != nil {
 					return err
 				}
-				forwardAddr[destUDPAddr] = struct{}{}
+				forwardAddr[destUDPAddr.String()] = struct{}{}
 
 				// send payload to dest address
 				_, err = server.WriteToUDP(payload, destUDPAddr)
@@ -95,7 +95,7 @@ func (t *transport) TransportUDP(server *UDPConn, request *Request) error {
 			}
 
 			// Should pack data when data from dest host
-			if _, ok := forwardAddr[addr]; ok {
+			if _, ok := forwardAddr[addr.String()]; ok {
 				address, err := ParseAddress(addr.String())
 				if err != nil {
 					return err

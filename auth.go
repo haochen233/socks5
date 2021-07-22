@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-// Authenticator provides socks server's authentication.
+// Authenticator provides socks5's authentication sub negotiation.
 type Authenticator interface {
 	Authenticate(in io.Reader, out io.Writer) error
 }
@@ -17,17 +17,17 @@ type Authenticator interface {
 type NoAuth struct {
 }
 
-// Authenticate NO_AUTHENTICATION_REQUIRED Authentication for socks5.
+// Authenticate NO_AUTHENTICATION_REQUIRED Authentication for socks5 Server and Client.
 func (n NoAuth) Authenticate(in io.Reader, out io.Writer) error {
 	return nil
 }
 
-// UserPwdAuth provides Username/Password Authenticator.
+// UserPwdAuth provides socks5 Server Username/Password Authenticator.
 type UserPwdAuth struct {
 	UserPwdStore
 }
 
-// Authenticate is Username/Password authentication method.
+// Authenticate provide socks5 Server Username/Password authentication.
 func (u UserPwdAuth) Authenticate(in io.Reader, out io.Writer) error {
 	uname, passwd, err := u.ReadUserPwd(in)
 	if err != nil {
