@@ -71,7 +71,7 @@ func (a *Address) Bytes(ver VER) ([]byte, error) {
 		// socks4a
 		buf.Write(port)
 		if a.ATYPE == DOMAINNAME {
-			buf.Write(net.IPv4(0, 0, 0, 1))
+			buf.Write(net.IPv4(0, 0, 0, 1).To4())
 			// NULL
 			buf.WriteByte(NULL)
 			// hostname
@@ -91,8 +91,11 @@ func (a *Address) Bytes(ver VER) ([]byte, error) {
 				return nil, errDomainMaxLengthLimit
 			}
 			buf.WriteByte(byte(len(a.Addr)))
+		} else if a.ATYPE == IPV4_ADDRESS {
+			buf.Write(a.Addr.To4())
+		} else if a.ATYPE == IPV6_ADDRESS {
+			buf.Write(a.Addr.To16())
 		}
-		buf.Write(a.Addr)
 		buf.Write(port)
 	}
 
@@ -100,15 +103,14 @@ func (a *Address) Bytes(ver VER) ([]byte, error) {
 }
 
 // readAddress read address info from follows:
-//    socks5 server's request.
-//    socks5 client's reply.
+//    socks5 server's reply.
+//    socks5 client's request.
 //    socks5 server's udp reply header.
 //    socks5 client's udp request header.
 //
-//    socks4 server's  reply.
 //    socks4 client's  request.
-//    socks4a server's  reply.
 //    socks4a client's  request
+// exclude: socks4a server's reply, socks4 server's reply. Please use readSocks4ReplyAddress.
 func readAddress(r io.Reader, ver VER) (*Address, REP, error) {
 	addr := &Address{}
 
@@ -151,6 +153,7 @@ func readAddress(r io.Reader, ver VER) (*Address, REP, error) {
 			addr.ATYPE = DOMAINNAME
 		}
 		addr.Addr = ip
+		return addr, Granted, nil
 	case Version5:
 		// ATYP
 		aType, err := ReadNBytes(r, 1)
@@ -188,9 +191,32 @@ func readAddress(r io.Reader, ver VER) (*Address, REP, error) {
 			return nil, GENERAL_SOCKS_SERVER_FAILURE, &OpError{Version5, "read", nil, "client dest port", err}
 		}
 		addr.Port = binary.BigEndian.Uint16(port)
+		return addr, SUCCESSED, nil
+	default:
+		return nil, UNASSIGNED, &VersionError{ver}
 	}
+}
 
-	return addr, SUCCESSED, nil
+// readSocks4ReplyAddress read socks4 reply address. Why don't use readAddress,
+// because socks4 reply not end with NULL, they're not compatible
+func readSocks4ReplyAddress(r io.Reader, ver VER) (*Address, REP, error) {
+	addr := &Address{}
+
+	// DST.PORT
+	port, err := ReadNBytes(r, 2)
+	if err != nil {
+		return nil, Rejected, &OpError{Version5, "read", nil, "client dest port", err}
+	}
+	addr.Port = binary.BigEndian.Uint16(port)
+	// DST.IP
+	ip, err := ReadNBytes(r, 4)
+	if err != nil {
+		return nil, Rejected, &OpError{Version4, "read", nil, "\"process request dest ip\"", err}
+	}
+	addr.Addr = ip
+	addr.ATYPE = IPV4_ADDRESS
+
+	return addr, Granted, nil
 }
 
 // UDPAddr return UDP Address.
