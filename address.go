@@ -91,6 +91,7 @@ func (a *Address) Bytes(ver VER) ([]byte, error) {
 				return nil, errDomainMaxLengthLimit
 			}
 			buf.WriteByte(byte(len(a.Addr)))
+			buf.Write(a.Addr)
 		} else if a.ATYPE == IPV4_ADDRESS {
 			buf.Write(a.Addr.To4())
 		} else if a.ATYPE == IPV6_ADDRESS {

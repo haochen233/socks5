@@ -22,10 +22,12 @@ import (
 )
 
 func main() {
+  // create socks server.
   srv := &socks5.Server{
     Addr: "127.0.0.1:1080",
   }
 
+  // start listen
   err := srv.ListenAndServe()
   if err != nil {
     log.Fatal(err)
@@ -46,14 +48,16 @@ import (
 )
 
 func main() {
-  // create a store.
+  // create a username/password store in memory.
   var userStorage socks5.UserPwdStore = socks5.NewMemeryStore(md5.New(), "secret")
   // set a pair of username/password.
   userStorage.Set("admin", "123456")
 
-  //composite server
+  // create socks server.
   srv := &socks5.Server{
+  	// listen addr.
     Addr: "127.0.0.1:1080",
+    // enable username/password method and authenticator.
     Authenticators: map[socks5.METHOD]socks5.Authenticator{
       socks5.USERNAME_PASSWORD: socks5.UserPwdAuth{userStorage},
     },
@@ -64,7 +68,6 @@ func main() {
   if err != nil {
     log.Fatal(err)
   }
-  
 }
 ```
 
@@ -206,4 +209,86 @@ func main() {
 	time.Sleep(time.Second)
 }
 
+```
+
+### CONNECT command usage:
+```go
+package main
+
+import (
+	"log"
+
+	"github.com/haochen233/socks5"
+)
+
+func main() {
+	clnt := socks5.Client{
+		ProxyAddr: "127.0.0.1:1080",
+		Auth: map[socks5.METHOD]socks5.Authenticator{
+			// If client want send NO_AUTHENTICATION_REQUIRED method to server, must
+			// add socks5.NoAuth authenticator explicitly
+			socks5.NO_AUTHENTICATION_REQUIRED: &socks5.NoAuth{},
+		},
+	}
+
+	// client send CONNECT command and get a tcp connection.
+	// and use this connection transit data between you and www.google.com:80.
+	conn, err := clnt.Connect(socks5.Version5, "www.baidu.com:80")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// close connection.
+	conn.Close()
+}
+
+```
+
+### UDP_ASSOCIATE command usage
+```go
+package main
+
+import (
+  "fmt"
+  "log"
+
+  "github.com/haochen233/socks5"
+)
+
+func main() {
+	clnt := socks5.Client{
+		ProxyAddr: "127.0.0.1:1080",
+		Auth: map[socks5.METHOD]socks5.Authenticator{
+			// If client want send NO_AUTHENTICATION_REQUIRED METHOD to server, must
+			// add socks5.NoAuth authenticator explicitly
+			socks5.NO_AUTHENTICATION_REQUIRED: &socks5.NoAuth{},
+		},
+	}
+
+	// client send UDP_ASSOCIATE command and get a udp connection.
+	conn, err := clnt.UDPForward("")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+
+	// send every datagram should add UDP request header.
+	someData := []byte("some data")
+	// dest addr where are you send to.
+	destAddr,_ := socks5.ParseAddress("127.0.0.1:9190")
+	// packing socks5 UDP data with dest addr.
+	pakcedData, err := socks5.PackUDPData(destAddr, someData)
+	// final send you data
+	conn.Write(pakcedData)
+
+	// on the contrary.
+	// you should unpacked the packet, after received  every packedData.
+	buf := make([]byte, 65507)
+	conn.Read(buf)
+
+	// unpacking data.
+	destAddr, unpackedData, err := socks5.UnpackUDPData(buf)
+	// operate your udp data. 
+	fmt.Println(unpackedData)
+}
 ```
