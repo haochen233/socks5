@@ -22,8 +22,7 @@ type Client struct {
 	//
 	// The Client cancels requests to the underlying Transport
 	// as if the Request's Context ended.
-	//
-	TimeOut time.Duration
+	Timeout time.Duration
 
 	// method mapping to the authenticator
 	Auth map[METHOD]Authenticator
@@ -38,8 +37,8 @@ type Client struct {
 
 // UserPasswd provide socks5 Client Username/Password Authenticator.
 type UserPasswd struct {
-	username string
-	passwrod string
+	Username string
+	Password string
 }
 
 // Authenticate socks5 Client Username/Password Authentication.
@@ -50,7 +49,7 @@ func (c *UserPasswd) Authenticate(in io.Reader, out io.Writer) error {
 	//    +----+------+----------+------+----------+
 	//    | 1  |  1   | 1 to 255 |  1   | 1 to 255 |
 	//    +----+------+----------+------+----------+
-	_, err := out.Write(append(append(append([]byte{0x01, byte(len(c.username))}, []byte(c.username)...), byte(len(c.passwrod))), []byte(c.passwrod)...))
+	_, err := out.Write(append(append(append([]byte{0x01, byte(len(c.Username))}, []byte(c.Username)...), byte(len(c.Password))), []byte(c.Password)...))
 	if err != nil {
 		return err
 	}
@@ -87,8 +86,8 @@ func (clt *Client) handshake(request *Request) (conn *net.TCPConn, replyAddr *Ad
 	if err != nil {
 		return nil, nil, err
 	}
-	if clt.TimeOut != 0 {
-		err = proxyTCPConn.SetDeadline(time.Now().Add(clt.TimeOut))
+	if clt.Timeout != 0 {
+		err = proxyTCPConn.SetDeadline(time.Now().Add(clt.Timeout))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -337,67 +336,76 @@ func (clt *Client) UDPForward(laddr string) (*UDPConn, error) {
 	return NewUDPConn(proxyUDPConn, proxyTCPConn), nil
 }
 
-//Bind socks bind cmd, get socks serve Listening bind addr,second time reply err,bind connect
-func (clt *Client) Bind(ver VER, destAddr *Address) (*Address, <-chan error, net.Conn) {
+// Bind send BIND Request. return 4 params:
+// 1. Server bind address.
+// 2. a readable chan to recv second reply from socks server.
+// 3. A connection that is not immediately available, until read a nil from err chan.
+// 4. An error, indicate the first reply result. If nil, successes.
+func (clt *Client) Bind(ver VER, destAddr string) (*Address, <-chan error, net.Conn, error) {
+	dest, err := ParseAddress(destAddr)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
 	request := &Request{
-		Address: destAddr,
+		Address: dest,
 		CMD:     BIND,
 		VER:     ver,
 	}
-	proxyBindConn, err := net.Dial("tcp", clt.ProxyAddr)
+	proxyConn, err := net.Dial("tcp", clt.ProxyAddr)
 	if err != nil {
 		clt.logf()(err.Error())
-		return nil, nil, nil
+		return nil, nil, nil, err
 	}
-	if clt.TimeOut != 0 {
-		err = proxyBindConn.SetDeadline(time.Now().Add(clt.TimeOut))
+	if clt.Timeout != 0 {
+		err = proxyConn.SetDeadline(time.Now().Add(clt.Timeout))
 		if err != nil {
 			clt.logf()(err.Error())
+			return nil, nil, nil, err
 		}
-		defer proxyBindConn.SetDeadline(time.Time{})
+		defer proxyConn.SetDeadline(time.Time{})
 	}
 	switch request.VER {
 	case Version4:
-		serverBoundAddr, secondAcceptance, proxyBindConn, err := clt.bind4(request, proxyBindConn)
+		serverBindAddr, secondReply, err := clt.bind4(request, proxyConn)
 		if err != nil {
-			proxyBindConn.Close()
+			proxyConn.Close()
 			clt.logf()(err.Error())
-			return serverBoundAddr, secondAcceptance, nil
+			return nil, nil, nil, err
 		}
-		return serverBoundAddr, secondAcceptance, proxyBindConn
+		return serverBindAddr, secondReply, proxyConn, nil
 	case Version5:
-		serverBoundAddr, secondAcceptance, proxyBindConn, err := clt.bind5(request, proxyBindConn)
+		serverBindAddr, secondReply, err := clt.bind5(request, proxyConn)
 		if err != nil {
-			proxyBindConn.Close()
+			proxyConn.Close()
 			clt.logf()(err.Error())
-			return serverBoundAddr, secondAcceptance, nil
+			return nil, nil, nil, err
 		}
-		return serverBoundAddr, secondAcceptance, proxyBindConn
+		return serverBindAddr, secondReply, proxyConn, nil
 	default:
-		err := fmt.Errorf("Version %d is not supported", request.VER)
-		clt.logf()(err.Error())
-		return nil, nil, nil
+		proxyConn.Close()
+		return nil, nil, nil, &VersionError{request.VER}
 	}
 }
 
 // bind5 socks5 bind
-func (clt *Client) bind5(request *Request, proxyBindConn net.Conn) (*Address, <-chan error, net.Conn, error) {
+func (clt *Client) bind5(request *Request, proxyBindConn net.Conn) (*Address, <-chan error, error) {
 	err := clt.authentication(proxyBindConn)
 	if err != nil {
-		return nil, nil, proxyBindConn, err
+		return nil, nil, err
 	}
 	destAddrByte, err := request.Address.Bytes(Version5)
 	if err != nil {
-		return nil, nil, proxyBindConn, err
+		return nil, nil, err
 	}
 	// The SOCKS request is formed as follows:
 	//    +----+-----+-------+------+----------+----------+
-	//    |VER | CMD |  RSV  | ATYP | DST.ADDR | DST.PORT |
-	//    +----+-----+-------+------+----------+----------+
-	//    | 1  |  1  | X'00' |  1   | Variable |    2     |
+	//	//    |VER | CMD |  RSV  | ATYP | DST.ADDR | DST.PORT |
+	//	//    +----+-----+-------+------+----------+----------+
+	//	//    | 1  |  1  | X'00' |  1   | Variable |    2     |
 	//    +----+-----+-------+------+----------+----------+
 	if _, err := proxyBindConn.Write(append([]byte{request.VER, request.CMD, request.RSV}, destAddrByte...)); err != nil {
-		return nil, nil, proxyBindConn, err
+		return nil, nil, err
 	}
 	// reply formed as follows:
 	//    +----+-----+-------+------+----------+----------+
@@ -408,20 +416,20 @@ func (clt *Client) bind5(request *Request, proxyBindConn net.Conn) (*Address, <-
 	reply := &Reply{}
 	tmp, err := ReadNBytes(proxyBindConn, 3)
 	if err != nil {
-		return nil, nil, proxyBindConn, fmt.Errorf("failed to get reply version and command and reserved, %v", err)
+		return nil, nil, fmt.Errorf("failed to get reply version and command and reserved, %v", err)
 	}
 	reply.VER, reply.REP, reply.RSV = tmp[0], tmp[1], tmp[2]
 	if reply.VER != Version5 {
-		return nil, nil, proxyBindConn, fmt.Errorf("unrecognized SOCKS version[%d]", reply.VER)
+		return nil, nil, fmt.Errorf("unrecognized SOCKS version[%d]", reply.VER)
 	}
 	// read address
 	serverBoundAddr, _, err := readAddress(proxyBindConn, request.VER)
 	if err != nil {
-		return nil, nil, proxyBindConn, fmt.Errorf("failed to get reply address, %v", err)
+		return nil, nil, fmt.Errorf("failed to get reply address, %v", err)
 	}
 	reply.Address = serverBoundAddr
 	if reply.REP != SUCCESSED {
-		return nil, nil, proxyBindConn, fmt.Errorf("server refuse client request, %s,when first time reply", rep2Str[reply.REP])
+		return nil, nil, fmt.Errorf("server refuse client request, %s,when first time reply", rep2Str[reply.REP])
 	}
 	errorChan := make(chan error)
 	go func() {
@@ -455,14 +463,14 @@ func (clt *Client) bind5(request *Request, proxyBindConn net.Conn) (*Address, <-
 		}
 		errorChan <- nil
 	}()
-	return serverBoundAddr, errorChan, proxyBindConn, err
+	return serverBoundAddr, errorChan, nil
 }
 
 // bind4 socks4 bind
-func (clt *Client) bind4(request *Request, proxyBindConn net.Conn) (*Address, <-chan error, net.Conn, error) {
+func (clt *Client) bind4(request *Request, proxyBindConn net.Conn) (*Address, <-chan error, error) {
 	destAddrByte, err := request.Address.Bytes(Version4)
 	if err != nil {
-		return nil, nil, proxyBindConn, err
+		return nil, nil, err
 	}
 	// The client connects to the SOCKS server and sends a CONNECT request when it wants to establish a connection to an application server.
 	// The client includes in the request packet the IP address and the port number of the destination host, and userid, in the following format.
@@ -471,7 +479,7 @@ func (clt *Client) bind4(request *Request, proxyBindConn net.Conn) (*Address, <-
 	//    +----+----+----+----+----+----+----+----+----+----+....+----+
 	//      1    1      2              4           variable       1
 	if _, err := proxyBindConn.Write(append([]byte{request.VER, request.CMD}, destAddrByte...)); err != nil {
-		return nil, nil, proxyBindConn, err
+		return nil, nil, err
 	}
 	// A reply packet is sent to the client when this connection is established,or when the request is rejected or the operation fails.
 	//    +----+----+----+----+----+----+----+----+
@@ -480,18 +488,18 @@ func (clt *Client) bind4(request *Request, proxyBindConn net.Conn) (*Address, <-
 	//       1    1      2              4
 	tmp, err := ReadNBytes(proxyBindConn, 2)
 	if err != nil {
-		return nil, nil, proxyBindConn, fmt.Errorf("failed to get reply version and command, %v", err)
+		return nil, nil, fmt.Errorf("failed to get reply version and command, %v", err)
 	}
 	if tmp[0] != 0 {
-		return nil, nil, proxyBindConn, fmt.Errorf("response VN wrong[%d]", tmp[0])
+		return nil, nil, fmt.Errorf("response VN wrong[%d]", tmp[0])
 	}
 	// Read address
-	serverBoundAddr, _, err := readAddress(proxyBindConn, request.VER)
+	serverBoundAddr, _, err := readSocks4ReplyAddress(proxyBindConn, request.VER)
 	if err != nil {
-		return nil, nil, proxyBindConn, fmt.Errorf("failed to get reply address, %v", err)
+		return nil, nil, fmt.Errorf("failed to get reply address, %v", err)
 	}
 	if tmp[1] != Granted {
-		return nil, nil, proxyBindConn, errors.New("server refuse client request,when first time reply")
+		return nil, nil, errors.New("server refuse client request,when first time reply")
 	}
 	errorChan := make(chan error)
 	go func() {
@@ -510,7 +518,7 @@ func (clt *Client) bind4(request *Request, proxyBindConn net.Conn) (*Address, <-
 			proxyBindConn.Close()
 		}
 		// read address
-		_, _, err = readAddress(proxyBindConn, request.VER)
+		_, _, err = readSocks4ReplyAddress(proxyBindConn, request.VER)
 		if err != nil {
 			errorChan <- fmt.Errorf("failed to get reply address, %v", err)
 			proxyBindConn.Close()
@@ -522,7 +530,7 @@ func (clt *Client) bind4(request *Request, proxyBindConn net.Conn) (*Address, <-
 		}
 		errorChan <- nil
 	}()
-	return serverBoundAddr, errorChan, proxyBindConn, err
+	return serverBoundAddr, errorChan, nil
 }
 
 // logf Logging is done using the client's errorlog
