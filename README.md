@@ -4,6 +4,21 @@ This is a Golang implementation of the Socks5 protocol library.
 To see in this [SOCKS Protocol Version 5](https://www.rfc-editor.org/rfc/rfc1928.html).  
 This library is also compatible with Socks4 and Socks4a.
 
+# Contents
+
+- [Features](#Features)
+- [Install](#Installation)
+- [Examples](#Examples)
+    - [Server example](#Server-example)
+        - [simple (no authentication)](#simple-no-authentication)
+        - [username/password authentication in memory](#username/password-authentication-in-memory)
+        - [custom transporter to transmit data between client and remote](#custom-transporter-to-transmit-data-between-client-and-remote)
+    - [Client example](#Client)
+        - [CONNECT usage](#CONNECT-usage)
+        - [UDP_ASSOCIATE usage](#UDP_ASSOCIATE-usage)
+        - [BIND usage](#BIND-usage)
+- [FAQ](#FAQ)
+
 # Features
 
 - socks5:
@@ -19,15 +34,17 @@ This library is also compatible with Socks4 and Socks4a.
 - Easy to read source code.
 - Similar to the Golang standard library experience.
 
-# Install
+# Installation
 
-`go get "github.com/haochen233/socks5"`
+``` sh
+$ go get "github.com/haochen233/socks5"`
+```
 
-# Example
+# Examples
 
-## Server
+## Server example
 
-### simple(no authentication):
+### simple (no authentication):
 
 ```go
 package main
@@ -140,7 +157,7 @@ func main() {
 }
 ```
 
-## Client
+## Client example
 
 ### CONNECT usage:
 
@@ -288,3 +305,12 @@ func main() {
 	}
 }
 ```
+
+# FAQ:
+- Server default enable socks4. How to disable socks4 support?  
+  when you initialize a socks5 server, you should spefic this flag to disable explicitly.
+   ```go
+   server := &socks5.Server{
+       DisableSocks4: true,
+   }
+   ```
